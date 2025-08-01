@@ -1,45 +1,134 @@
 version: '3.8'
 
 services:
-  # Development environment
+  # =============================================================================
+  # Development Environment - Full development stack
+  # =============================================================================
   connectome-dev:
     build:
       context: .
       target: development
+      args:
+        PYTHON_VERSION: 3.11
+        PYTORCH_VERSION: 2.0.0
     container_name: connectome-gnn-dev
     volumes:
       - .:/app
-      - connectome_cache:/app/.cache
-      - pip_cache:/root/.cache/pip
+      - connectome_data:/app/data
+      - connectome_cache:/app/cache
+      - connectome_logs:/app/logs
+      - connectome_outputs:/app/outputs
+      - jupyter_config:/home/connectome/.jupyter
+      - pip_cache:/home/connectome/.cache/pip
     ports:
-      - "8888:8888"  # Jupyter
-      - "8000:8000"  # Docs server
+      - "8888:8888"  # Jupyter Lab
+      - "8050:8050"  # Dash apps
+      - "8000:8000"  # Development server
       - "6006:6006"  # TensorBoard
     environment:
       - JUPYTER_ENABLE_LAB=yes
+      - CONNECTOME_GNN_DATA_DIR=/app/data
+      - CONNECTOME_GNN_CACHE_DIR=/app/cache
+      - CONNECTOME_GNN_LOG_DIR=/app/logs
+      - CONNECTOME_GNN_OUTPUT_DIR=/app/outputs
+      - CONNECTOME_GNN_LOG_LEVEL=DEBUG
       - PYTHONPATH=/app
-    command: >
-      bash -c "
-        jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password='' &
-        tail -f /dev/null
-      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/lab"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
     stdin_open: true
     tty: true
+    networks:
+      - connectome-network
 
-  # Production environment
+  # =============================================================================
+  # Production Environment - Optimized for deployment
+  # =============================================================================
   connectome-prod:
     build:
       context: .
       target: production
+      args:
+        PYTHON_VERSION: 3.11
+        BUILD_ENV: production
     container_name: connectome-gnn-prod
     volumes:
       - connectome_data:/app/data:ro
-      - connectome_output:/app/output
+      - connectome_outputs:/app/outputs
+      - connectome_logs:/app/logs
+    ports:
+      - "8080:8080"  # API server
     environment:
+      - CONNECTOME_GNN_ENV=production
+      - CONNECTOME_GNN_LOG_LEVEL=INFO
+      - CONNECTOME_GNN_WORKERS=4
       - PYTHONPATH=/app
+    healthcheck:
+      test: ["CMD", "python", "-c", "import connectome_gnn; print('OK')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '4.0'
+        reservations:
+          memory: 4G 
+          cpus: '2.0'
+    networks:
+      - connectome-network
 
-  # Testing environment
+  # =============================================================================
+  # GPU Training Environment - CUDA-enabled for model training
+  # =============================================================================
+  connectome-gpu:
+    build:
+      context: .
+      target: gpu-production
+      args:
+        PYTHON_VERSION: 3.11
+        CUDA_VERSION: 11.8
+        PYTORCH_VERSION: 2.0.0
+    container_name: connectome-gnn-gpu
+    runtime: nvidia
+    volumes:
+      - connectome_data:/app/data
+      - connectome_outputs:/app/outputs
+      - connectome_models:/app/models
+      - connectome_logs:/app/logs
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - CONNECTOME_GNN_GPU_ENABLED=true
+      - CONNECTOME_GNN_DATA_DIR=/app/data
+      - CONNECTOME_GNN_OUTPUT_DIR=/app/outputs
+      - CONNECTOME_GNN_LOG_LEVEL=INFO
+      - PYTHONPATH=/app
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import torch; assert torch.cuda.is_available(); print('GPU OK')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - connectome-network
+
+  # =============================================================================
+  # Testing Environment - Comprehensive test execution
+  # =============================================================================  
   connectome-test:
     build:
       context: .
@@ -47,16 +136,55 @@ services:
     container_name: connectome-gnn-test
     volumes:
       - .:/app
+      - test_reports:/app/test-reports
       - test_cache:/app/.pytest_cache
+      - coverage_reports:/app/htmlcov
     environment:
+      - CONNECTOME_GNN_TEST_MODE=true
+      - CONNECTOME_GNN_LOG_LEVEL=WARNING
       - PYTHONPATH=/app
     command: >
       bash -c "
-        pytest --cov=connectome_gnn --cov-report=html --cov-report=term-missing &&
-        echo 'Tests completed successfully'
+        echo '🧪 Running comprehensive test suite...' &&
+        mkdir -p test-reports &&
+        pytest tests/ --junitxml=test-reports/junit.xml --cov=connectome_gnn --cov-report=html --cov-report=term-missing --tb=short -v &&
+        echo '✅ All tests completed successfully'
       "
+    networks:
+      - connectome-network
 
-  # Security scanning
+  # =============================================================================
+  # Benchmarking Environment - Performance testing
+  # =============================================================================
+  connectome-benchmark:
+    build:
+      context: .
+      target: testing
+    container_name: connectome-gnn-benchmark
+    volumes:
+      - .:/app
+      - benchmark_reports:/app/benchmark-reports
+    environment:
+      - CONNECTOME_GNN_TEST_MODE=true
+      - PYTHONPATH=/app
+    command: >
+      bash -c "
+        echo '⚡ Running performance benchmarks...' &&
+        mkdir -p benchmark-reports &&
+        pytest tests/benchmarks/ -v --benchmark-json=benchmark-reports/benchmark.json --tb=short &&
+        echo '📊 Benchmarks completed'
+      "
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+          cpus: '8.0'
+    networks:
+      - connectome-network
+
+  # =============================================================================
+  # Security Scanning Environment
+  # =============================================================================
   connectome-security:
     build:
       context: .
@@ -64,18 +192,27 @@ services:
     container_name: connectome-gnn-security
     volumes:
       - .:/app
-      - security_reports:/app/reports
+      - security_reports:/app/security-reports
     command: >
       bash -c "
-        echo 'Running security scans...' &&
-        bandit -r connectome_gnn/ -f json -o reports/bandit_report.json &&
-        safety check --json --output reports/safety_report.json &&
-        pip-audit --format=json --output=reports/audit_report.json &&
-        echo 'Security scans completed'
+        echo '🔒 Running security scans...' &&
+        mkdir -p security-reports &&
+        echo 'Running Bandit security scan...' &&
+        bandit -r connectome_gnn/ -f json -o security-reports/bandit-report.json &&
+        echo 'Running Safety vulnerability scan...' &&
+        safety check --json --output security-reports/safety-report.json &&
+        echo 'Running pip-audit dependency scan...' &&
+        pip-audit --format=json --output=security-reports/pip-audit-report.json &&
+        echo '✅ Security scans completed' &&
+        echo 'Reports available in security-reports/ directory'
       "
+    networks:
+      - connectome-network
 
-  # Documentation builder
-  docs:
+  # =============================================================================
+  # Documentation Builder and Server
+  # =============================================================================
+  connectome-docs:
     build:
       context: .
       target: development
@@ -84,49 +221,165 @@ services:
       - .:/app
       - docs_build:/app/docs/_build
     ports:
-      - "8080:8000"
+      - "8081:8000"  # Documentation server
     working_dir: /app/docs
     command: >
       bash -c "
+        echo '📚 Building documentation...' &&
+        pip install sphinx sphinx-rtd-theme myst-parser &&
         make html &&
+        echo '🌐 Starting documentation server...' &&
         cd _build/html &&
-        python -m http.server 8000
+        python -m http.server 8000 --bind 0.0.0.0
       "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - connectome-network
 
-  # Terragon autonomous system
-  terragon:
-    build:
-      context: .
-      target: development
-    container_name: connectome-gnn-terragon
-    volumes:
-      - .:/app
-      - terragon_logs:/app/.terragon/logs
-      - terragon_cache:/app/.terragon/cache
+  # =============================================================================
+  # Database for Experiment Tracking (Optional)
+  # =============================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: connectome-gnn-db
     environment:
-      - PYTHONPATH=/app
-      - TERRAGON_MODE=autonomous
+      - POSTGRES_DB=connectome_gnn
+      - POSTGRES_USER=connectome
+      - POSTGRES_PASSWORD=connectome_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U connectome -d connectome_gnn"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - connectome-network
+
+  # =============================================================================
+  # MLflow Tracking Server (Optional)
+  # =============================================================================
+  mlflow:
+    image: python:3.11-slim
+    container_name: connectome-gnn-mlflow
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_data:/mlflow
+    environment:
+      - MLFLOW_BACKEND_STORE_URI=postgresql://connectome:connectome_password@postgres:5432/connectome_gnn
+      - MLFLOW_DEFAULT_ARTIFACT_ROOT=/mlflow/artifacts
     command: >
       bash -c "
-        echo '🤖 Terragon Autonomous SDLC Engine' &&
-        make terragon-init &&
-        while true; do
-          make terragon-discover &&
-          sleep 3600
-        done
+        pip install mlflow psycopg2-binary &&
+        mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri postgresql://connectome:connectome_password@postgres:5432/connectome_gnn --default-artifact-root /mlflow/artifacts
       "
+    depends_on:
+      - postgres
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - connectome-network
 
+  # =============================================================================
+  # Monitoring Stack (Prometheus + Grafana)
+  # =============================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: connectome-gnn-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    networks:
+      - connectome-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: connectome-gnn-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    networks:
+      - connectome-network
+
+# =============================================================================
+# Named Volumes for Persistent Data
+# =============================================================================
 volumes:
-  connectome_cache:
+  # Data and cache
   connectome_data:
-  connectome_output:
+    driver: local
+  connectome_cache:
+    driver: local
+  connectome_outputs:
+    driver: local
+  connectome_models:
+    driver: local
+  connectome_logs:
+    driver: local
+  
+  # Development
+  jupyter_config:
+    driver: local
   pip_cache:
+    driver: local
+  
+  # Testing and reports
+  test_reports:
+    driver: local
   test_cache:
+    driver: local
+  coverage_reports:
+    driver: local
+  benchmark_reports:
+    driver: local
   security_reports:
+    driver: local
+  
+  # Documentation
   docs_build:
-  terragon_logs:
-  terragon_cache:
+    driver: local
+  
+  # Database and tracking
+  postgres_data:
+    driver: local
+  mlflow_data:
+    driver: local
+  
+  # Monitoring
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
 
+# =============================================================================
+# Networks
+# =============================================================================
 networks:
-  default:
-    name: connectome-gnn-network
+  connectome-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

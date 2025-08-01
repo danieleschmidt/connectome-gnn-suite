@@ -1,0 +1,212 @@
+# Dockerignore for Connectome-GNN-Suite
+# Optimize Docker build context by excluding unnecessary files
+
+# =============================================================================
+# Version Control
+# =============================================================================
+.git
+.gitignore
+.gitattributes
+.github
+
+# =============================================================================
+# Python
+# =============================================================================
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# =============================================================================
+# IDE and Editors
+# =============================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# =============================================================================
+# Testing and Coverage
+# =============================================================================
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+htmlcov/
+test-reports/
+benchmark-reports/
+
+# =============================================================================
+# Documentation
+# =============================================================================
+docs/_build/
+docs/build/
+site/
+*.log
+
+# =============================================================================
+# Data and Cache
+# =============================================================================
+data/
+raw_data/
+processed_data/
+datasets/
+cache/
+.cache/
+tmp/
+temp/
+.tmp/
+
+# Neuroimaging data files
+*.nii
+*.nii.gz
+*.mgz
+*.img
+*.hdr
+
+# Model and experiment files
+models/
+checkpoints/
+outputs/
+runs/
+wandb/
+mlruns/
+lightning_logs/
+logs/
+
+# =============================================================================
+# Security and Configuration
+# =============================================================================
+.env
+.envrc
+config.ini
+secrets.yaml
+private_config.py
+*.key
+*.pem
+*.crt
+security-reports/
+
+# =============================================================================
+# Development Tools
+# =============================================================================
+.terragon/
+.devcontainer/.env
+.jupyter/
+.local/
+
+# Node.js (for documentation tools)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# =============================================================================
+# Build artifacts
+# =============================================================================
+*.tar.gz
+*.zip
+*.whl
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# =============================================================================
+# OS specific
+# =============================================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# =============================================================================
+# Large files and directories
+# =============================================================================
+# HCP and other neuroimaging datasets
+hcp_data/
+ukb_data/
+adni_data/
+abide_data/
+large_data/
+
+# Compiled models and weights
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.joblib
+*.pt
+*.pth
+*.onnx
+
+# =============================================================================
+# Container-specific
+# =============================================================================
+docker-compose.override.yml
+.dockerignore
+
+# =============================================================================
+# Monitoring and metrics
+# =============================================================================
+prometheus_data/
+grafana_data/
+monitoring/
+
+# =============================================================================
+# Include important files (override excludes)
+# =============================================================================
+!README.md
+!LICENSE
+!CHANGELOG.md
+!pyproject.toml
+!requirements*.txt
+!Dockerfile*
+!docker-compose*.yml
+!.dockerignore

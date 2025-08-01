@@ -1,0 +1,100 @@
+# Prometheus configuration for Connectome-GNN-Suite monitoring
+# Optimized for machine learning workload monitoring
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'connectome-gnn-suite'
+    environment: 'development'
+
+# Rules for alerting
+rule_files:
+  - "alert_rules.yml"
+
+# Scrape configuration
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+    scrape_interval: 30s
+    metrics_path: /metrics
+
+  # Application metrics from connectome-gnn services
+  - job_name: 'connectome-gnn-dev'
+    static_configs:
+      - targets: ['connectome-dev:8888']
+    scrape_interval: 30s
+    metrics_path: /metrics
+    scrape_timeout: 10s
+
+  - job_name: 'connectome-gnn-prod'
+    static_configs:
+      - targets: ['connectome-prod:8080']
+    scrape_interval: 15s
+    metrics_path: /metrics
+    scrape_timeout: 10s
+
+  - job_name: 'connectome-gnn-gpu'
+    static_configs:
+      - targets: ['connectome-gpu:8080']
+    scrape_interval: 15s
+    metrics_path: /metrics
+    scrape_timeout: 10s
+
+  # Database monitoring
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres:5432']
+    scrape_interval: 30s
+    metrics_path: /metrics
+
+  # MLflow tracking server
+  - job_name: 'mlflow'
+    static_configs:
+      - targets: ['mlflow:5000']
+    scrape_interval: 60s
+    metrics_path: /metrics
+
+  # Docker container metrics (if cadvisor is available)
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+    scrape_interval: 30s
+    metrics_path: /metrics
+
+  # Node/system metrics (if node_exporter is available)
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    scrape_interval: 30s
+    metrics_path: /metrics
+
+  # GPU metrics (if dcgm-exporter is available)
+  - job_name: 'dcgm-exporter'
+    static_configs:
+      - targets: ['dcgm-exporter:9400']
+    scrape_interval: 15s
+    metrics_path: /metrics
+
+# Alert manager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
+
+# Storage configuration
+storage:
+  tsdb:
+    path: /prometheus
+    retention.time: 30d
+    retention.size: 10GB
+
+# Remote write configuration (for external monitoring systems)
+# remote_write:
+#   - url: "https://your-external-prometheus.com/api/v1/write"
+#     basic_auth:
+#       username: "your-username"
+#       password: "your-password"

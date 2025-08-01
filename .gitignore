@@ -246,3 +246,72 @@ temp/
 # Terragon autonomous system
 .terragon/logs/
 .terragon/cache/
+
+# Development containers
+.devcontainer/.env
+
+# IDE specific files
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Jupyter Lab specific
+.jupyter/
+.local/
+
+# Cache directories
+cache/
+.cache/
+
+# Configuration files with sensitive data
+config.ini
+secrets.yaml
+private_config.py
+
+# Large datasets (should be managed via DVC or external storage)
+datasets/
+large_data/
+hcp_data/
+ukb_data/
+adni_data/
+abide_data/
+
+# Benchmark results
+benchmark_results/
+performance_logs/
+
+# Documentation build artifacts
+docs/_build/
+docs/build/
+site/
+
+# Testing artifacts
+.coverage.*
+coverage.xml
+junit.xml
+test-results/
+
+# Profiling results
+*.prof
+profile_*.txt
+memory_profile_*.txt
+
+# GPU/CUDA artifacts
+*.cubin
+*.fatbin
+*.ptx
+
+# Distributed training artifacts
+nccl_debug/
+distributed_logs/

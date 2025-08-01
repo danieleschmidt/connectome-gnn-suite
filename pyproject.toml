@@ -63,6 +63,12 @@ full = [
     "connectome-gnn-suite[viz,dev]",
 ]
 
+[project.scripts]
+cgnn-train = "connectome_gnn.cli:train"
+cgnn-eval = "connectome_gnn.cli:evaluate"
+cgnn-preprocess = "connectome_gnn.cli:preprocess"
+cgnn-visualize = "connectome_gnn.cli:visualize"
+
 [project.urls]
 Homepage = "https://github.com/yourusername/connectome-gnn-suite"
 Documentation = "https://connectome-gnn-suite.readthedocs.io"
@@ -103,3 +109,39 @@ severity = "medium"
 
 [tool.bandit.assert_used]
 skips = ["*_test.py", "*test_*.py"]
+
+[tool.flake8]
+max-line-length = 88
+extend-ignore = ["E203", "W503", "E501"]
+per-file-ignores = [
+    "__init__.py:F401",
+    "tests/*:F401,F811,S101"
+]
+
+[tool.coverage.run]
+source = ["connectome_gnn"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+    "setup.py",
+    "*/site-packages/*"
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:"
+]
+
+[tool.pre-commit]
+repos = [
+    {repo = "https://github.com/pre-commit/pre-commit-hooks", rev = "v4.4.0"},
+    {repo = "https://github.com/psf/black", rev = "22.10.0"},
+    {repo = "https://github.com/pycqa/isort", rev = "5.11.4"},
+    {repo = "https://github.com/pycqa/flake8", rev = "6.0.0"},
+    {repo = "https://github.com/pre-commit/mirrors-mypy", rev = "v0.991"},
+]

@@ -1,0 +1,248 @@
+# Prometheus alerting rules for Connectome-GNN-Suite
+# Focused on ML pipeline monitoring and system health
+
+groups:
+  # =============================================================================
+  # System Health Alerts
+  # =============================================================================
+  - name: system_health
+    rules:
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 5m
+        labels:
+          severity: warning
+          service: system
+        annotations:
+          summary: "High CPU usage detected"
+          description: "CPU usage is above 85% on {{ $labels.instance }} for more than 5 minutes"
+
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          service: system
+        annotations:
+          summary: "High memory usage detected"
+          description: "Memory usage is above 90% on {{ $labels.instance }} for more than 5 minutes"
+
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 10
+        for: 5m
+        labels:
+          severity: warning
+          service: system
+        annotations:
+          summary: "Low disk space"
+          description: "Disk space is below 10% on {{ $labels.instance }}"
+
+  # =============================================================================
+  # GPU Monitoring Alerts
+  # =============================================================================
+  - name: gpu_monitoring
+    rules:
+      - alert: GPUHighUtilization
+        expr: DCGM_FI_DEV_GPU_UTIL > 95
+        for: 10m
+        labels:
+          severity: warning
+          service: gpu
+        annotations:
+          summary: "High GPU utilization"
+          description: "GPU {{ $labels.gpu }} utilization is above 95% for more than 10 minutes"
+
+      - alert: GPUHighTemperature
+        expr: DCGM_FI_DEV_GPU_TEMP > 85
+        for: 5m
+        labels:
+          severity: critical
+          service: gpu
+        annotations:
+          summary: "High GPU temperature"
+          description: "GPU {{ $labels.gpu }} temperature is above 85°C"
+
+      - alert: GPUMemoryHigh
+        expr: (DCGM_FI_DEV_FB_USED / DCGM_FI_DEV_FB_TOTAL) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          service: gpu
+        annotations:
+          summary: "High GPU memory usage"
+          description: "GPU {{ $labels.gpu }} memory usage is above 90%"
+
+  # =============================================================================
+  # Application Health Alerts
+  # =============================================================================
+  - name: application_health
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: "{{ $labels.job }}"
+        annotations:
+          summary: "Service is down"
+          description: "{{ $labels.job }} service is down on {{ $labels.instance }}"
+
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: application
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is above 10% for {{ $labels.job }} service"
+
+      - alert: SlowResponseTime
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: application
+        annotations:
+          summary: "Slow response times"
+          description: "95th percentile response time is above 2 seconds for {{ $labels.job }}"
+
+  # =============================================================================
+  # Machine Learning Pipeline Alerts
+  # =============================================================================
+  - name: ml_pipeline
+    rules:
+      - alert: TrainingJobFailed
+        expr: increase(ml_training_jobs_failed_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: ml_training
+        annotations:
+          summary: "Training job failed"
+          description: "{{ $value }} training job(s) failed in the last hour"
+
+      - alert: ModelAccuracyDrop
+        expr: ml_model_accuracy < 0.8
+        for: 15m
+        labels:
+          severity: warning
+          service: ml_model
+        annotations:
+          summary: "Model accuracy dropped"
+          description: "Model {{ $labels.model_name }} accuracy dropped below 80%"
+
+      - alert: LongTrainingTime
+        expr: ml_training_duration_seconds > 7200  # 2 hours
+        for: 0m
+        labels:
+          severity: warning
+          service: ml_training
+        annotations:
+          summary: "Training taking too long"
+          description: "Training job {{ $labels.job_id }} has been running for more than 2 hours"
+
+      - alert: DataPipelineStalled
+        expr: increase(ml_data_processed_total[10m]) == 0
+        for: 10m
+        labels:
+          severity: warning
+          service: data_pipeline  
+        annotations:
+          summary: "Data pipeline stalled"
+          description: "No data has been processed in the last 10 minutes"
+
+  # =============================================================================
+  # Container and Infrastructure Alerts
+  # =============================================================================
+  - name: container_health
+    rules:
+      - alert: ContainerKilled
+        expr: time() - container_last_seen > 60
+        for: 0m
+        labels:
+          severity: warning
+          service: container
+        annotations:
+          summary: "Container killed"
+          description: "Container {{ $labels.name }} was killed"
+
+      - alert: ContainerHighCPUUsage
+        expr: (rate(container_cpu_usage_seconds_total[5m]) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          service: container
+        annotations:
+          summary: "Container high CPU usage"
+          description: "Container {{ $labels.name }} CPU usage is above 80%"
+
+      - alert: ContainerHighMemoryUsage
+        expr: (container_memory_usage_bytes / container_spec_memory_limit_bytes) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          service: container
+        annotations:
+          summary: "Container high memory usage"
+          description: "Container {{ $labels.name }} memory usage is above 90%"
+
+  # =============================================================================
+  # Database Alerts
+  # =============================================================================
+  - name: database_health
+    rules:
+      - alert: PostgreSQLDown
+        expr: pg_up == 0
+        for: 0m
+        labels:
+          severity: critical
+          service: database
+        annotations:
+          summary: "PostgreSQL is down"
+          description: "PostgreSQL database is down on {{ $labels.instance }}"
+
+      - alert: PostgreSQLTooManyConnections
+        expr: sum by (instance) (pg_stat_activity_count) > 80
+        for: 2m
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "PostgreSQL too many connections"
+          description: "PostgreSQL instance {{ $labels.instance }} has more than 80 connections"
+
+      - alert: PostgreSQLSlowQueries
+        expr: avg by (instance) (rate(pg_stat_activity_max_tx_duration[1m])) > 60
+        for: 2m
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "PostgreSQL slow queries"
+          description: "PostgreSQL instance {{ $labels.instance }} has slow queries"
+
+  # =============================================================================
+  # Storage Alerts
+  # =============================================================================
+  - name: storage_health
+    rules:
+      - alert: VolumeUsageHigh
+        expr: (1 - (container_fs_usage_bytes / container_fs_limit_bytes)) * 100 < 10
+        for: 5m
+        labels:
+          severity: warning
+          service: storage
+        annotations:
+          summary: "Volume usage high"
+          description: "Volume {{ $labels.device }} usage is above 90%"
+
+      - alert: VolumeIOHigh
+        expr: rate(container_fs_io_time_seconds_total[5m]) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          service: storage
+        annotations:
+          summary: "High volume I/O"
+          description: "Volume {{ $labels.device }} I/O wait time is high"

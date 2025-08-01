@@ -1,0 +1,132 @@
+version: '3.8'
+
+services:
+  # Development environment
+  connectome-dev:
+    build:
+      context: .
+      target: development
+    container_name: connectome-gnn-dev
+    volumes:
+      - .:/app
+      - connectome_cache:/app/.cache
+      - pip_cache:/root/.cache/pip
+    ports:
+      - "8888:8888"  # Jupyter
+      - "8000:8000"  # Docs server
+      - "6006:6006"  # TensorBoard
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      - PYTHONPATH=/app
+    command: >
+      bash -c "
+        jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password='' &
+        tail -f /dev/null
+      "
+    stdin_open: true
+    tty: true
+
+  # Production environment
+  connectome-prod:
+    build:
+      context: .
+      target: production
+    container_name: connectome-gnn-prod
+    volumes:
+      - connectome_data:/app/data:ro
+      - connectome_output:/app/output
+    environment:
+      - PYTHONPATH=/app
+    restart: unless-stopped
+
+  # Testing environment
+  connectome-test:
+    build:
+      context: .
+      target: testing
+    container_name: connectome-gnn-test
+    volumes:
+      - .:/app
+      - test_cache:/app/.pytest_cache
+    environment:
+      - PYTHONPATH=/app
+    command: >
+      bash -c "
+        pytest --cov=connectome_gnn --cov-report=html --cov-report=term-missing &&
+        echo 'Tests completed successfully'
+      "
+
+  # Security scanning
+  connectome-security:
+    build:
+      context: .
+      target: security
+    container_name: connectome-gnn-security
+    volumes:
+      - .:/app
+      - security_reports:/app/reports
+    command: >
+      bash -c "
+        echo 'Running security scans...' &&
+        bandit -r connectome_gnn/ -f json -o reports/bandit_report.json &&
+        safety check --json --output reports/safety_report.json &&
+        pip-audit --format=json --output=reports/audit_report.json &&
+        echo 'Security scans completed'
+      "
+
+  # Documentation builder
+  docs:
+    build:
+      context: .
+      target: development
+    container_name: connectome-gnn-docs
+    volumes:
+      - .:/app
+      - docs_build:/app/docs/_build
+    ports:
+      - "8080:8000"
+    working_dir: /app/docs
+    command: >
+      bash -c "
+        make html &&
+        cd _build/html &&
+        python -m http.server 8000
+      "
+
+  # Terragon autonomous system
+  terragon:
+    build:
+      context: .
+      target: development
+    container_name: connectome-gnn-terragon
+    volumes:
+      - .:/app
+      - terragon_logs:/app/.terragon/logs
+      - terragon_cache:/app/.terragon/cache
+    environment:
+      - PYTHONPATH=/app
+      - TERRAGON_MODE=autonomous
+    command: >
+      bash -c "
+        echo '🤖 Terragon Autonomous SDLC Engine' &&
+        make terragon-init &&
+        while true; do
+          make terragon-discover &&
+          sleep 3600
+        done
+      "
+
+volumes:
+  connectome_cache:
+  connectome_data:
+  connectome_output:
+  pip_cache:
+  test_cache:
+  security_reports:
+  docs_build:
+  terragon_logs:
+  terragon_cache:
+
+networks:
+  default:
+    name: connectome-gnn-network

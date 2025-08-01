@@ -205,3 +205,44 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Scientific Computing / ML specific
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.npy
+*.npz
+*.mat
+*.parquet
+
+# Neuroscience / Connectome specific data files
+data/
+raw_data/
+processed_data/
+connectomes/
+brain_networks/
+*.nii
+*.nii.gz
+*.mgz
+*.img
+*.hdr
+
+# Model checkpoints and training outputs
+checkpoints/
+models/
+outputs/
+logs/
+runs/
+wandb/
+mlruns/
+lightning_logs/
+
+# Temporary computation files
+tmp/
+temp/
+.tmp/
+
+# Terragon autonomous system
+.terragon/logs/
+.terragon/cache/

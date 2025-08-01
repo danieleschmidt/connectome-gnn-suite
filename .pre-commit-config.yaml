@@ -38,7 +38,26 @@ repos:
         args: [--ignore-missing-imports]
 
   - repo: https://github.com/pycqa/bandit
-    rev: 1.7.5
+    rev: 1.7.6
     hooks:
       - id: bandit
         args: ["-c", "pyproject.toml"]
+        exclude: ^tests/
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: debug-statements
+      - id: detect-private-key
+
+  - repo: https://github.com/Lucas-C/pre-commit-hooks-safety
+    rev: v1.3.2
+    hooks:
+      - id: python-safety-dependencies-check
+
+  - repo: https://github.com/pycqa/pydocstyle
+    rev: 6.3.0
+    hooks:
+      - id: pydocstyle
+        args: [--convention=numpy]
+        exclude: ^tests/

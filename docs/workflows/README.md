@@ -56,11 +56,29 @@ This directory contains documentation and templates for CI/CD workflows.
 **Triggers**:
 - Weekly schedule (Sunday 2 AM UTC)
 - Manual workflow dispatch
+- PR to main (lightweight scan)
 
 **Jobs**:
-- **dependency-scan**: Use pip-audit for dependency vulnerabilities
-- **code-scan**: Use CodeQL for code analysis
-- **container-scan**: Scan any Docker images
+- **dependency-scan**: Use pip-audit and safety for dependency vulnerabilities
+- **code-scan**: Use CodeQL and bandit for code analysis
+- **secret-scan**: Use GitGuardian for secrets detection
+- **container-scan**: Scan any Docker images with Trivy
+- **sbom-generation**: Create Software Bill of Materials
+
+### 5. Autonomous Value Discovery (`autonomous.yml`)
+
+**Purpose**: Terragon autonomous SDLC enhancement and value discovery.
+
+**Triggers**:
+- PR merge to main (immediate value discovery)
+- Daily schedule (2 AM UTC) for comprehensive analysis
+- Manual workflow dispatch
+
+**Jobs**:
+- **value-discovery**: Scan for new work items using multiple sources
+- **backlog-update**: Update BACKLOG.md with prioritized items
+- **auto-execution**: Execute highest-value items if safe
+- **metrics-update**: Update value delivery metrics
 
 ## Workflow Templates
 
@@ -70,6 +88,7 @@ See individual files in this directory for complete workflow implementations:
 - `docs-template.yml` - Documentation deployment
 - `release-template.yml` - Automated releases
 - `security-template.yml` - Security scanning
+- `autonomous-template.yml` - Terragon autonomous value discovery
 
 ## Setup Instructions
 

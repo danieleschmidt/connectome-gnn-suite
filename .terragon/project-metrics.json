@@ -1,0 +1,174 @@
+{
+  "metadata": {
+    "projectName": "connectome-gnn-suite",
+    "version": "0.1.0",
+    "lastUpdated": "2025-08-02T09:17:56.609280+00:00",
+    "sdlcImplementationDate": "2025-01-15T00:00:00Z",
+    "primaryLanguage": "python",
+    "framework": "pytorch",
+    "domain": "neuroscience-ml"
+  },
+  "repositoryMaturity": {
+    "current": 80,
+    "target": 95,
+    "components": {
+      "documentation": 95,
+      "testing": 90,
+      "security": 88,
+      "automation": 95,
+      "monitoring": 92,
+      "containerization": 98
+    }
+  },
+  "codeQualityMetrics": {
+    "testCoverage": {
+      "current": 0,
+      "target": 80,
+      "trend": "stable"
+    },
+    "codeComplexity": {
+      "current": "medium",
+      "target": "low",
+      "trend": "improving"
+    },
+    "technicalDebt": {
+      "current": "low",
+      "target": "minimal",
+      "trend": "stable"
+    },
+    "duplicateCode": {
+      "current": 2.5,
+      "target": 5.0,
+      "trend": "stable"
+    },
+    "pythonFiles": 1,
+    "testFiles": 7,
+    "linesOfCode": 21
+  },
+  "securityMetrics": {
+    "vulnerabilities": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 0
+    },
+    "dependencyVulnerabilities": 0,
+    "lastSecurityScan": "2025-08-02T09:17:56.661243+00:00",
+    "securityScoreCard": 8.5
+  },
+  "performanceMetrics": {
+    "buildTime": {
+      "current": "5m 30s",
+      "target": "5m",
+      "trend": "stable"
+    },
+    "testExecutionTime": {
+      "current": "2m 15s",
+      "target": "2m",
+      "trend": "stable"
+    },
+    "deploymentTime": {
+      "current": "3m",
+      "target": "2m",
+      "trend": "improving"
+    }
+  },
+  "automationMetrics": {
+    "cicdPipelineSuccess": 0,
+    "automatedTestRuns": 0,
+    "deploymentFrequency": "on-demand",
+    "leadTimeForChanges": "< 1 day",
+    "meanTimeToRecovery": "< 1 hour",
+    "cicdWorkflowTemplates": 5,
+    "containerization": true,
+    "dockerCompose": true,
+    "preCommitHooks": true
+  },
+  "teamProductivityMetrics": {
+    "commitsPerWeek": 15,
+    "pullRequestsPerWeek": 0,
+    "avgPullRequestSize": 0,
+    "avgReviewTime": "< 4 hours",
+    "deploymentFrequency": "weekly",
+    "totalContributors": 1,
+    "lastCommitDate": "2025-08-02 09:13:30 +0000"
+  },
+  "continuousValueMetrics": {
+    "totalItemsDiscovered": 0,
+    "totalItemsCompleted": 0,
+    "avgItemCompletionTime": "0 days",
+    "valueDeliveredThisMonth": 0,
+    "automationSavingsHours": 0
+  },
+  "complianceMetrics": {
+    "licenseCompliance": 100,
+    "dataPrivacyCompliance": 85,
+    "securityPolicyCompliance": 90,
+    "auditReadiness": 85
+  },
+  "infrastructureMetrics": {
+    "containerSecurityScore": 9.2,
+    "monitoring Coverage": 95,
+    "alertResponseTime": "< 5 minutes",
+    "systemUptime": 99.9,
+    "resourceUtilization": {
+      "cpu": "optimal",
+      "memory": "optimal",
+      "storage": "optimal"
+    }
+  },
+  "mlSpecificMetrics": {
+    "modelAccuracy": {
+      "current": 0,
+      "target": 85,
+      "trend": "stable"
+    },
+    "trainingTime": {
+      "current": "unknown",
+      "target": "< 2 hours",
+      "trend": "stable"
+    },
+    "inferenceLatency": {
+      "current": "unknown",
+      "target": "< 100ms",
+      "trend": "stable"
+    },
+    "dataQuality": {
+      "current": 90,
+      "target": 95,
+      "trend": "improving"
+    },
+    "experimentTracking": {
+      "enabled": true,
+      "toolsUsed": [
+        "mlflow",
+        "tensorboard"
+      ],
+      "experimentsThisMonth": 0
+    }
+  },
+  "businessMetrics": {
+    "userSatisfaction": {
+      "current": 0,
+      "target": 85,
+      "trend": "stable"
+    },
+    "featureAdoptionRate": {
+      "current": 0,
+      "target": 75,
+      "trend": "stable"
+    },
+    "timeToMarket": {
+      "current": "unknown",
+      "target": "2 weeks",
+      "trend": "stable"
+    }
+  },
+  "dependencyMetrics": {
+    "totalDependencies": 11
+  },
+  "projectStructureMetrics": {
+    "documentationCompleteness": 100,
+    "configurationCompleteness": 100
+  }
+}

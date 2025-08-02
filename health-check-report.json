@@ -1,0 +1,244 @@
+{
+  "timestamp": "2025-08-02T09:19:13.026154+00:00",
+  "overall_health": "good",
+  "score": 78,
+  "checks": {
+    "documentation": {
+      "score": 27,
+      "max_score": 27,
+      "percentage": 100,
+      "status": "pass",
+      "checks": {
+        "README.md": {
+          "exists": true,
+          "required": true,
+          "path": "/root/repo/README.md",
+          "status": "pass"
+        },
+        "LICENSE": {
+          "exists": true,
+          "required": true,
+          "path": "/root/repo/LICENSE",
+          "status": "pass"
+        },
+        "CHANGELOG.md": {
+          "exists": true,
+          "required": true,
+          "path": "/root/repo/CHANGELOG.md",
+          "status": "pass"
+        },
+        "CONTRIBUTING.md": {
+          "exists": true,
+          "required": true,
+          "path": "/root/repo/CONTRIBUTING.md",
+          "status": "pass"
+        },
+        "CODE_OF_CONDUCT.md": {
+          "exists": true,
+          "required": true,
+          "path": "/root/repo/CODE_OF_CONDUCT.md",
+          "status": "pass"
+        },
+        "SECURITY.md": {
+          "exists": true,
+          "required": true,
+          "path": "/root/repo/SECURITY.md",
+          "status": "pass"
+        },
+        "PROJECT_CHARTER.md": {
+          "exists": true,
+          "required": true,
+          "path": "/root/repo/PROJECT_CHARTER.md",
+          "status": "pass"
+        },
+        "ARCHITECTURE.md": {
+          "exists": true,
+          "required": false,
+          "path": "/root/repo/ARCHITECTURE.md",
+          "status": "pass"
+        },
+        "ROADMAP.md": {
+          "exists": false,
+          "required": false,
+          "path": "/root/repo/ROADMAP.md",
+          "status": "pass"
+        },
+        "SETUP_REQUIRED.md": {
+          "exists": true,
+          "required": false,
+          "path": "/root/repo/SETUP_REQUIRED.md",
+          "status": "pass"
+        },
+        "readme_quality": {
+          "status": "pass",
+          "sections_found": 3,
+          "has_code_examples": true,
+          "word_count": 1037,
+          "quality_score": 4
+        },
+        "docs_structure": {
+          "guides": true,
+          "adr": true,
+          "workflows": true,
+          "monitoring": true,
+          "runbooks": true
+        }
+      }
+    },
+    "code_quality": {
+      "score": 11,
+      "max_score": 12,
+      "percentage": 92,
+      "status": "pass",
+      "checks": {
+        "pyproject.toml": {
+          "exists": true,
+          "required": true,
+          "path": "/root/repo/pyproject.toml",
+          "status": "pass"
+        },
+        ".pre-commit-config.yaml": {
+          "exists": true,
+          "required": true,
+          "path": "/root/repo/.pre-commit-config.yaml",
+          "status": "pass"
+        },
+        ".editorconfig": {
+          "exists": true,
+          "required": true,
+          "path": "/root/repo/.editorconfig",
+          "status": "pass"
+        },
+        ".gitignore": {
+          "exists": true,
+          "required": true,
+          "path": "/root/repo/.gitignore",
+          "status": "pass"
+        },
+        "pytest.ini": {
+          "exists": true,
+          "required": false,
+          "path": "/root/repo/pytest.ini",
+          "status": "pass"
+        },
+        "pre_commit_installed": {
+          "status": "fail",
+          "installed": false
+        },
+        "test_coverage": {
+          "tests_dir_exists": true,
+          "test_files_count": 7,
+          "status": "pass"
+        }
+      }
+    },
+    "security": {
+      "score": 2,
+      "max_score": 7,
+      "percentage": 29,
+      "status": "fail",
+      "checks": {
+        "SECURITY.md": {
+          "exists": true,
+          "required": true,
+          "path": "/root/repo/SECURITY.md",
+          "status": "pass"
+        },
+        ".github_dependabot.yml": {
+          "exists": false,
+          "required": true,
+          "path": "/root/repo/.github/dependabot.yml",
+          "status": "fail"
+        },
+        "security_tools": {
+          "tools_found": [
+            "bandit"
+          ],
+          "status": "warning"
+        },
+        "secrets_check": {
+          "status": "warning",
+          "suspicious_files": [
+            {
+              "file": ".env.example",
+              "pattern": "password"
+            },
+            {
+              "file": ".env.example",
+              "pattern": "secret"
+            },
+            {
+              "file": ".env.example",
+              "pattern": "key"
+            },
+            {
+              "file": ".env.example",
+              "pattern": "api_key"
+            },
+            {
+              "file": ".env.example",
+              "pattern": "access_key"
+            }
+          ],
+          "message": "Found 5 potential secrets"
+        }
+      }
+    },
+    "automation": {
+      "score": 9,
+      "max_score": 9,
+      "percentage": 100,
+      "status": "pass",
+      "checks": {
+        "workflow_templates": {
+          "count": 5,
+          "templates": [
+            "autonomous-template.yml",
+            "ci-template.yml",
+            "docs-template.yml",
+            "release-template.yml",
+            "security-template.yml"
+          ],
+          "status": "pass"
+        },
+        "containerization": {
+          "docker_files_present": 3,
+          "total_docker_files": 3,
+          "status": "pass"
+        },
+        "makefile": {
+          "exists": true,
+          "required": false,
+          "path": "/root/repo/Makefile",
+          "status": "pass"
+        },
+        "dev_environment": {
+          "dev_files_present": 2,
+          "status": "pass"
+        }
+      }
+    },
+    "dependencies": {
+      "score": 4,
+      "max_score": 5,
+      "percentage": 80,
+      "status": "pass",
+      "checks": {
+        "dependency_file": {
+          "status": "pass",
+          "file": "pyproject.toml"
+        },
+        "dev_dependencies": {
+          "status": "pass"
+        },
+        "version_constraints": {
+          "status": "pass"
+        },
+        "security_scanning": {
+          "status": "warning",
+          "tool": "missing"
+        }
+      }
+    }
+  }
+}

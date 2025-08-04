@@ -9,14 +9,48 @@ __version__ = "0.1.0"
 __author__ = "Daniel Schmidt"
 __email__ = "daniel@example.com"
 
-# Core imports will be added as modules are implemented
-# from .data import ConnectomeDataset
-# from .models import HierarchicalBrainGNN
-# from .tasks import CognitiveScorePrediction
-# from .visualization import SubgraphCLIP
+# Core imports
+from .data import ConnectomeDataset, ConnectomeProcessor, HCPLoader
+from .models import (
+    BaseConnectomeModel,
+    HierarchicalBrainGNN,
+    TemporalConnectomeGNN,
+    MultiModalBrainGNN,
+    PopulationGraphGNN
+)
+from .tasks import (
+    BaseConnectomeTask,
+    CognitiveScorePrediction,
+    SubjectClassification,
+    AgeRegression,
+    ConnectomeTaskSuite
+)
+from .training import ConnectomeTrainer
+from .utils import set_random_seed, get_device
 
 __all__ = [
     "__version__",
     "__author__", 
     "__email__",
+    # Data
+    "ConnectomeDataset",
+    "ConnectomeProcessor", 
+    "HCPLoader",
+    # Models
+    "BaseConnectomeModel",
+    "HierarchicalBrainGNN",
+    "TemporalConnectomeGNN",
+    "MultiModalBrainGNN",
+    "PopulationGraphGNN",
+    # Tasks
+    "BaseConnectomeTask",
+    "CognitiveScorePrediction",
+    "SubjectClassification",
+    "AgeRegression",
+    "ConnectomeTaskSuite",
+    # Training
+    "ConnectomeTrainer",
+    # Utils
+    "set_random_seed",
+    "get_device",
 ]

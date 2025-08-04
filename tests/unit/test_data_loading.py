@@ -3,50 +3,179 @@
 import pytest
 import torch
 import numpy as np
-from torch_geometric.data import Data, Batch
+import pandas as pd
+from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
+import tempfile
+import os
+
+from connectome_gnn.data import ConnectomeDataset, ConnectomeProcessor, HCPLoader
+from connectome_gnn.data.dataset import ConnectomeGraph
+from connectome_gnn.utils import set_random_seed
+
+
+@pytest.fixture
+def temp_data_dir():
+    """Create temporary directory for test data."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        yield Path(temp_dir)
+
+
+@pytest.fixture
+def mock_connectivity_data():
+    """Create mock connectivity data."""
+    set_random_seed(42)
+    np.random.seed(42)
+    
+    num_nodes = 90
+    connectivity_matrices = {}
+    
+    for i in range(5):  # 5 subjects
+        subject_id = f"sub-{i+1:03d}"
+        # Create symmetric connectivity matrix
+        conn_matrix = np.random.rand(num_nodes, num_nodes)
+        conn_matrix = (conn_matrix + conn_matrix.T) / 2
+        np.fill_diagonal(conn_matrix, 0)
+        connectivity_matrices[subject_id] = conn_matrix
+    
+    return connectivity_matrices
+
+
+@pytest.fixture
+def mock_demographics():
+    """Create mock demographics data."""
+    subjects = [f"sub-{i+1:03d}" for i in range(5)]
+    
+    demographics = pd.DataFrame({
+        'subject_id': subjects,
+        'age': [25, 34, 45, 29, 38],
+        'sex': ['M', 'F', 'M', 'F', 'M'],
+        'fluid_intelligence': [105.2, 112.8, 98.5, 108.1, 115.3],
+        'education_years': [16, 14, 18, 12, 15]
+    })
+    
+    return demographics
+
+
+class TestConnectomeGraph:
+    """Test ConnectomeGraph data structure."""
+    
+    def test_connectome_graph_creation(self):
+        """Test creation of ConnectomeGraph object."""
+        # Create test data
+        num_nodes = 10
+        node_features = 5
+        num_edges = 20
+        
+        x = torch.randn(num_nodes, node_features)
+        edge_index = torch.randint(0, num_nodes, (2, num_edges))
+        edge_attr = torch.randn(num_edges, 1)
+        node_pos = torch.randn(num_nodes, 3)
+        
+        graph = ConnectomeGraph(
+            x=x,
+            edge_index=edge_index,
+            edge_attr=edge_attr,
+            node_pos=node_pos,
+            subject_id="test_subject",
+            demographics={'age': 30, 'sex': 'M'}
+        )
+        
+        assert graph.num_nodes == num_nodes
+        assert graph.num_edges == num_edges
+        assert graph.subject_id == "test_subject"
+        assert graph.demographics['age'] == 30
+        assert graph.x.shape == (num_nodes, node_features)
+        assert graph.edge_attr.shape == (num_edges, 1)
+        assert graph.node_pos.shape == (num_nodes, 3)
+    
+    def test_connectome_graph_repr(self):
+        """Test string representation of ConnectomeGraph."""
+        x = torch.randn(5, 3)
+        edge_index = torch.randint(0, 5, (2, 8))
+        
+        graph = ConnectomeGraph(
+            x=x,
+            edge_index=edge_index,
+            subject_id="test_subject"
+        )
+        
+        repr_str = repr(graph)
+        assert "subject_id=test_subject" in repr_str
+        assert "num_nodes=5" in repr_str
+        assert "num_edges=8" in repr_str
+
+
+class TestConnectomeProcessor:
+    """Test connectome preprocessing functionality."""
+    
+    def test_processor_initialization(self):
+        """Test processor initialization with different parameters."""
+        processor = ConnectomeProcessor(
+            parcellation="AAL",
+            edge_threshold=0.05,
+            normalization="log_transform"
+        )
+        
+        assert processor.parcellation == "AAL"
+        assert processor.edge_threshold == 0.05
+        assert processor.normalization == "log_transform"
+        assert processor.hierarchy is not None
+    
+    def test_brain_hierarchy_aal(self):
+        """Test brain hierarchy for AAL parcellation."""
+        processor = ConnectomeProcessor(parcellation="AAL")
+        hierarchy = processor._get_brain_hierarchy()
+        
+        assert hierarchy["num_regions"] == 90
+        assert "levels" in hierarchy
+        assert "lobes" in hierarchy["levels"]
+        assert "hemispheres" in hierarchy["levels"]
+        
+        # Check lobe assignments
+        lobes = hierarchy["levels"]["lobes"]
+        assert "frontal" in lobes
+        assert "parietal" in lobes
+        assert "temporal" in lobes
+        assert "occipital" in lobes
 
 
 class TestConnectomeDataset:
-    """Test the ConnectomeDataset class."""
+    """Test ConnectomeDataset functionality."""
     
-    def test_dataset_initialization(self, temp_dir, mock_connectome_data):
-        """Test dataset can be initialized with proper parameters."""
-        # This would test the actual ConnectomeDataset once implemented
-        # For now, we'll test the interface expectations
+    def test_dataset_initialization(self, temp_data_dir):
+        """Test dataset initialization."""
+        dataset = ConnectomeDataset(
+            root=str(temp_data_dir),
+            resolution="7mm",
+            modality="structural",
+            parcellation="AAL",
+            download=True
+        )
         
-        # Expected interface
-        dataset_config = {
-            "root": str(temp_dir),
-            "resolution": "7mm",
-            "modality": "structural",
-            "subjects": mock_connectome_data["subjects"]
-        }
+        assert dataset.resolution == "7mm"
+        assert dataset.modality == "structural"
+        assert dataset.parcellation == "AAL"
+        assert dataset.processor is not None
+    
+    def test_data_loading(self, temp_data_dir):
+        """Test loading of dataset samples."""
+        dataset = ConnectomeDataset(
+            root=str(temp_data_dir),
+            download=True
+        )
         
-        assert dataset_config["root"] is not None
-        assert dataset_config["resolution"] in ["3mm", "5mm", "7mm"]
-        assert dataset_config["modality"] in ["structural", "functional"]
+        # Test dataset length
+        assert len(dataset) > 0
         
-    def test_dataset_length(self, mock_connectome_data):
-        """Test dataset returns correct length."""
-        expected_length = mock_connectome_data["num_subjects"]
-        assert expected_length == 5
-        
-    def test_dataset_getitem(self, simple_graph):
-        """Test dataset __getitem__ returns proper Data objects."""
-        # Test that we get a proper PyTorch Geometric Data object
-        assert isinstance(simple_graph, Data)
-        assert hasattr(simple_graph, 'x')
-        assert hasattr(simple_graph, 'edge_index')
-        assert hasattr(simple_graph, 'edge_attr')
-        
-    def test_dataset_properties(self, simple_graph):
-        """Test dataset data properties."""
-        data = simple_graph
-        assert data.num_nodes == 4
-        assert data.num_edges == 8
-        assert data.x.shape == (4, 16)
-        assert data.edge_attr.shape == (8, 8)
+        # Test loading first sample
+        sample = dataset[0]
+        assert isinstance(sample, ConnectomeGraph)
+        assert sample.x is not None
+        assert sample.edge_index is not None
+        assert sample.edge_attr is not None
+        assert sample.node_pos is not None
+        assert hasattr(sample, 'subject_id')
 
 
 class TestDataLoaders:

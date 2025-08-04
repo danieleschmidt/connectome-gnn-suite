@@ -411,9 +411,9 @@ class MyCustomGNN(BaseConnectomeModel):
 ```bibtex
 @software{connectome_gnn_suite,
   title={Connectome-GNN-Suite: Graph Neural Networks for Human Brain Connectivity},
-  author={Your Name},
+  author={Daniel Schmidt},
   year={2025},
-  url={https://github.com/yourusername/connectome-gnn-suite}
+  url={https://github.com/danieleschmidt/connectome-gnn-suite}
 }
 
 @dataset{hcp_data,

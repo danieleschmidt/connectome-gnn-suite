@@ -64,4 +64,573 @@ class SubjectBenchmark:
         }
         
         # Results storage
-        self.results = {}\n        self.detailed_results = {}\n    \n    def evaluate(\n        self,\n        model: BaseConnectomeModel,\n        dataset,\n        task: BaseConnectomeTask,\n        metrics: Optional[List[str]] = None\n    ) -> Dict[str, Any]:\n        \"\"\"Evaluate model on dataset with comprehensive metrics.\n        \n        Args:\n            model: Trained connectome model\n            dataset: Dataset to evaluate on\n            task: Prediction task\n            metrics: List of metrics to compute\n            \n        Returns:\n            Dictionary containing evaluation results\n        \"\"\"\n        if metrics is None:\n            metrics = self.default_metrics.get(task.task_type, ['mae', 'accuracy'])\n        \n        print(f\"Starting evaluation with {len(dataset)} samples\")\n        print(f\"Task: {task.get_task_info()}\")\n        print(f\"Metrics: {metrics}\")\n        \n        start_time = time.time()\n        \n        # Cross-validation evaluation\n        cv_results = self._cross_validate(\n            model, dataset, task, metrics\n        )\n        \n        # Holdout evaluation\n        holdout_results = self._holdout_evaluate(\n            model, dataset, task, metrics\n        )\n        \n        # Combine results\n        evaluation_results = {\n            'cross_validation': cv_results,\n            'holdout': holdout_results,\n            'task_info': task.get_task_info(),\n            'model_info': {\n                'name': model.__class__.__name__,\n                'parameters': sum(p.numel() for p in model.parameters()),\n            },\n            'dataset_info': {\n                'size': len(dataset),\n                'features': dataset[0].x.shape[1] if hasattr(dataset[0], 'x') else 'unknown'\n            },\n            'evaluation_time': time.time() - start_time,\n            'config': self.config.__dict__\n        }\n        \n        # Save results\n        self._save_results(evaluation_results, task.task_name)\n        \n        # Generate report\n        self._generate_report(evaluation_results, task.task_name)\n        \n        return evaluation_results\n    \n    def _cross_validate(\n        self,\n        model: BaseConnectomeModel,\n        dataset,\n        task: BaseConnectomeTask,\n        metrics: List[str]\n    ) -> Dict[str, Any]:\n        \"\"\"Perform cross-validation evaluation.\"\"\"\n        print(f\"Running {self.config.n_folds}-fold cross-validation...\")\n        \n        # Prepare stratification labels if needed\n        if self.config.stratify and task.task_type in ['binary_classification', 'multiclass_classification']:\n            y_labels = []\n            for i in range(len(dataset)):\n                data = dataset[i]\n                if hasattr(data, 'y') and data.y is not None:\n                    if torch.is_tensor(data.y):\n                        y_labels.append(int(data.y.item()))\n                    else:\n                        y_labels.append(int(data.y))\n                else:\n                    y_labels.append(0)  # Default label\n            \n            kfold = StratifiedKFold(\n                n_splits=self.config.n_folds,\n                shuffle=True,\n                random_state=self.config.random_state\n            )\n            splits = list(kfold.split(range(len(dataset)), y_labels))\n        else:\n            kfold = KFold(\n                n_splits=self.config.n_folds,\n                shuffle=True,\n                random_state=self.config.random_state\n            )\n            splits = list(kfold.split(range(len(dataset))))\n        \n        fold_results = []\n        all_predictions = []\n        all_targets = []\n        \n        for fold, (train_idx, val_idx) in enumerate(splits):\n            if self.config.verbose:\n                print(f\"  Fold {fold + 1}/{self.config.n_folds}\")\n            \n            # Create fold datasets\n            train_data = [dataset[i] for i in train_idx]\n            val_data = [dataset[i] for i in val_idx]\n            \n            # Clone and train model for this fold\n            fold_model = type(model)(**model.get_config() if hasattr(model, 'get_config') else {})\n            fold_model.load_state_dict(model.state_dict())\n            \n            # Quick training on fold (simplified)\n            fold_trainer = self._create_trainer(fold_model, task)\n            \n            # Create data loaders\n            from torch_geometric.loader import DataLoader\n            train_loader = DataLoader(train_data, batch_size=8, shuffle=True)\n            val_loader = DataLoader(val_data, batch_size=16, shuffle=False)\n            \n            # Train for a few epochs (simplified for benchmarking)\n            fold_trainer.fit(train_loader, val_loader)\n            \n            # Evaluate fold\n            fold_results_dict = fold_trainer.evaluate(val_loader)\n            fold_results.append(fold_results_dict)\n            \n            # Store predictions for later analysis\n            predictions, targets = self._get_predictions_targets(fold_model, val_data, task)\n            all_predictions.extend(predictions)\n            all_targets.extend(targets)\n        \n        # Compute cross-validation statistics\n        cv_stats = self._compute_cv_statistics(fold_results, metrics)\n        \n        # Compute overall metrics on all predictions\n        if all_predictions and all_targets:\n            overall_metrics = self._compute_metrics(\n                np.array(all_predictions),\n                np.array(all_targets),\n                task.task_type,\n                metrics\n            )\n            cv_stats['overall_metrics'] = overall_metrics\n        \n        return {\n            'fold_results': fold_results,\n            'cv_statistics': cv_stats,\n            'all_predictions': all_predictions if self.config.save_predictions else None,\n            'all_targets': all_targets if self.config.save_predictions else None\n        }\n    \n    def _holdout_evaluate(\n        self,\n        model: BaseConnectomeModel,\n        dataset,\n        task: BaseConnectomeTask,\n        metrics: List[str]\n    ) -> Dict[str, Any]:\n        \"\"\"Perform holdout evaluation.\"\"\"\n        if self.config.verbose:\n            print(\"Running holdout evaluation...\")\n        \n        # Split dataset\n        n_samples = len(dataset)\n        n_test = int(n_samples * self.config.test_size)\n        n_train = n_samples - n_test\n        \n        # Random split\n        np.random.seed(self.config.random_state)\n        indices = np.random.permutation(n_samples)\n        train_idx = indices[:n_train]\n        test_idx = indices[n_train:]\n        \n        # Create datasets\n        train_data = [dataset[i] for i in train_idx]\n        test_data = [dataset[i] for i in test_idx]\n        \n        # Train model\n        trainer = self._create_trainer(model, task)\n        \n        from torch_geometric.loader import DataLoader\n        train_loader = DataLoader(train_data, batch_size=8, shuffle=True)\n        test_loader = DataLoader(test_data, batch_size=16, shuffle=False)\n        \n        # Train model\n        trainer.fit(train_loader, test_loader)\n        \n        # Evaluate\n        test_results = trainer.evaluate(test_loader)\n        \n        # Get predictions for detailed analysis\n        predictions, targets = self._get_predictions_targets(model, test_data, task)\n        \n        # Compute additional metrics\n        detailed_metrics = self._compute_metrics(\n            np.array(predictions),\n            np.array(targets),\n            task.task_type,\n            metrics\n        )\n        \n        return {\n            'test_metrics': test_results,\n            'detailed_metrics': detailed_metrics,\n            'predictions': predictions if self.config.save_predictions else None,\n            'targets': targets if self.config.save_predictions else None,\n            'train_size': len(train_data),\n            'test_size': len(test_data)\n        }\n    \n    def _create_trainer(self, model: BaseConnectomeModel, task: BaseConnectomeTask):\n        \"\"\"Create trainer for benchmarking.\"\"\"\n        config = TrainingConfig(\n            batch_size=8,\n            learning_rate=1e-3,\n            max_epochs=20,  # Reduced for benchmarking\n            patience=5,\n            val_check_interval=1\n        )\n        \n        return AdvancedConnectomeTrainer(\n            model=model,\n            task=task,\n            config=config,\n            output_dir=self.output_dir / \"training_temp\",\n            use_wandb=False\n        )\n    \n    def _get_predictions_targets(self, model, dataset, task):\n        \"\"\"Get model predictions and targets.\"\"\"\n        model.eval()\n        predictions = []\n        targets = []\n        \n        with torch.no_grad():\n            for data in dataset:\n                # Get prediction\n                output = model(data)\n                if isinstance(output, dict):\n                    pred = output['predictions']\n                else:\n                    pred = output\n                \n                # Get target\n                target = task.prepare_targets([data])\n                target = task.normalize_targets(target)\n                \n                predictions.append(pred.cpu().numpy())\n                targets.append(target.cpu().numpy())\n        \n        return predictions, targets\n    \n    def _compute_cv_statistics(self, fold_results, metrics):\n        \"\"\"Compute cross-validation statistics.\"\"\"\n        cv_stats = {}\n        \n        # Collect metric values across folds\n        for metric in metrics:\n            values = []\n            for fold_result in fold_results:\n                if metric in fold_result:\n                    values.append(fold_result[metric])\n            \n            if values:\n                cv_stats[f\"{metric}_mean\"] = np.mean(values)\n                cv_stats[f\"{metric}_std\"] = np.std(values)\n                cv_stats[f\"{metric}_values\"] = values\n        \n        return cv_stats\n    \n    def _compute_metrics(\n        self,\n        predictions: np.ndarray,\n        targets: np.ndarray,\n        task_type: str,\n        metrics: List[str]\n    ) -> Dict[str, float]:\n        \"\"\"Compute evaluation metrics.\"\"\"\n        results = {}\n        \n        try:\n            if task_type == 'regression':\n                if 'mae' in metrics:\n                    results['mae'] = mean_absolute_error(targets, predictions)\n                if 'rmse' in metrics:\n                    results['rmse'] = np.sqrt(mean_squared_error(targets, predictions))\n                if 'r2' in metrics:\n                    results['r2'] = r2_score(targets, predictions)\n                if 'pearson_r' in metrics:\n                    corr, _ = pearsonr(targets.flatten(), predictions.flatten())\n                    results['pearson_r'] = corr if not np.isnan(corr) else 0.0\n                if 'spearman_r' in metrics:\n                    corr, _ = spearmanr(targets.flatten(), predictions.flatten())\n                    results['spearman_r'] = corr if not np.isnan(corr) else 0.0\n            \n            elif task_type in ['binary_classification', 'multiclass_classification']:\n                # Convert predictions to class labels if needed\n                if predictions.ndim > 1 and predictions.shape[1] > 1:\n                    pred_classes = np.argmax(predictions, axis=1)\n                    pred_probs = predictions\n                else:\n                    pred_classes = (predictions > 0.5).astype(int)\n                    pred_probs = predictions\n                \n                if targets.ndim > 1:\n                    target_classes = np.argmax(targets, axis=1)\n                else:\n                    target_classes = targets.astype(int)\n                \n                if 'accuracy' in metrics:\n                    results['accuracy'] = accuracy_score(target_classes, pred_classes)\n                if 'precision' in metrics:\n                    results['precision'] = precision_score(\n                        target_classes, pred_classes, average='weighted', zero_division=0\n                    )\n                if 'recall' in metrics:\n                    results['recall'] = recall_score(\n                        target_classes, pred_classes, average='weighted', zero_division=0\n                    )\n                if 'f1' in metrics:\n                    results['f1'] = f1_score(\n                        target_classes, pred_classes, average='weighted', zero_division=0\n                    )\n                if 'macro_f1' in metrics:\n                    results['macro_f1'] = f1_score(\n                        target_classes, pred_classes, average='macro', zero_division=0\n                    )\n                \n                # AUC metrics (only for binary or with probabilities)\n                if task_type == 'binary_classification' and pred_probs.ndim == 1:\n                    if 'auc' in metrics:\n                        try:\n                            results['auc'] = roc_auc_score(target_classes, pred_probs)\n                        except ValueError:\n                            results['auc'] = 0.5  # Random performance\n                    if 'ap' in metrics:\n                        try:\n                            results['ap'] = average_precision_score(target_classes, pred_probs)\n                        except ValueError:\n                            results['ap'] = 0.5\n        \n        except Exception as e:\n            print(f\"Error computing metrics: {e}\")\n            # Return default values\n            for metric in metrics:\n                results[metric] = 0.0\n        \n        return results\n    \n    def _save_results(self, results: Dict[str, Any], task_name: str):\n        \"\"\"Save benchmark results to file.\"\"\"\n        results_file = self.output_dir / f\"{task_name}_results.json\"\n        \n        # Convert numpy arrays to lists for JSON serialization\n        serializable_results = self._make_serializable(results)\n        \n        with open(results_file, 'w') as f:\n            json.dump(serializable_results, f, indent=2, default=str)\n        \n        if self.config.verbose:\n            print(f\"Results saved to {results_file}\")\n    \n    def _make_serializable(self, obj):\n        \"\"\"Make object JSON serializable.\"\"\"\n        if isinstance(obj, dict):\n            return {k: self._make_serializable(v) for k, v in obj.items()}\n        elif isinstance(obj, list):\n            return [self._make_serializable(v) for v in obj]\n        elif isinstance(obj, np.ndarray):\n            return obj.tolist()\n        elif isinstance(obj, (np.int32, np.int64)):\n            return int(obj)\n        elif isinstance(obj, (np.float32, np.float64)):\n            return float(obj)\n        else:\n            return obj\n    \n    def _generate_report(self, results: Dict[str, Any], task_name: str):\n        \"\"\"Generate comprehensive benchmark report.\"\"\"\n        if self.config.verbose:\n            print(\"\\n=== BENCHMARK REPORT ===\")\n            print(f\"Task: {task_name}\")\n            print(f\"Model: {results['model_info']['name']}\")\n            print(f\"Dataset Size: {results['dataset_info']['size']}\")\n            print(f\"Model Parameters: {results['model_info']['parameters']:,}\")\n            \n            # Cross-validation results\n            if 'cross_validation' in results:\n                print(\"\\n--- Cross-Validation Results ---\")\n                cv_stats = results['cross_validation']['cv_statistics']\n                for key, value in cv_stats.items():\n                    if key.endswith('_mean'):\n                        metric = key.replace('_mean', '')\n                        std_key = f\"{metric}_std\"\n                        if std_key in cv_stats:\n                            print(f\"{metric.upper()}: {value:.4f} ± {cv_stats[std_key]:.4f}\")\n                        else:\n                            print(f\"{metric.upper()}: {value:.4f}\")\n            \n            # Holdout results\n            if 'holdout' in results:\n                print(\"\\n--- Holdout Results ---\")\n                holdout_metrics = results['holdout']['detailed_metrics']\n                for metric, value in holdout_metrics.items():\n                    print(f\"{metric.upper()}: {value:.4f}\")\n            \n            print(f\"\\nEvaluation Time: {results['evaluation_time']:.2f} seconds\")\n        \n        # Generate plots\n        self._generate_plots(results, task_name)\n    \n    def _generate_plots(self, results: Dict[str, Any], task_name: str):\n        \"\"\"Generate visualization plots for results.\"\"\"\n        try:\n            # Cross-validation metrics plot\n            if 'cross_validation' in results and 'cv_statistics' in results['cross_validation']:\n                self._plot_cv_results(results['cross_validation']['cv_statistics'], task_name)\n            \n            # Prediction plots if available\n            if 'holdout' in results and results['holdout'].get('predictions'):\n                self._plot_predictions(\n                    results['holdout']['predictions'],\n                    results['holdout']['targets'],\n                    task_name,\n                    results['task_info']['task_type']\n                )\n        \n        except Exception as e:\n            print(f\"Error generating plots: {e}\")\n    \n    def _plot_cv_results(self, cv_stats: Dict[str, Any], task_name: str):\n        \"\"\"Plot cross-validation results.\"\"\"\n        # Find metrics with values across folds\n        metrics_data = {}\n        for key, value in cv_stats.items():\n            if key.endswith('_values') and isinstance(value, list):\n                metric_name = key.replace('_values', '')\n                metrics_data[metric_name] = value\n        \n        if not metrics_data:\n            return\n        \n        # Create plot\n        n_metrics = len(metrics_data)\n        fig, axes = plt.subplots(1, min(n_metrics, 4), figsize=(4*min(n_metrics, 4), 4))\n        \n        if n_metrics == 1:\n            axes = [axes]\n        elif n_metrics > 4:\n            axes = axes[:4]\n            metrics_data = dict(list(metrics_data.items())[:4])\n        \n        for idx, (metric, values) in enumerate(metrics_data.items()):\n            ax = axes[idx] if n_metrics > 1 else axes[0]\n            \n            # Box plot of cross-validation results\n            ax.boxplot(values)\n            ax.set_title(f'{metric.upper()}\\nCross-Validation')\n            ax.set_ylabel('Score')\n            \n            # Add mean line\n            mean_val = np.mean(values)\n            ax.axhline(y=mean_val, color='r', linestyle='--', alpha=0.7, label=f'Mean: {mean_val:.3f}')\n            ax.legend()\n        \n        plt.suptitle(f'Cross-Validation Results: {task_name}')\n        plt.tight_layout()\n        \n        plot_path = self.output_dir / f'{task_name}_cv_results.png'\n        plt.savefig(plot_path, dpi=300, bbox_inches='tight')\n        plt.close()\n        \n        if self.config.verbose:\n            print(f\"Cross-validation plot saved to {plot_path}\")\n    \n    def _plot_predictions(\n        self,\n        predictions: List[np.ndarray],\n        targets: List[np.ndarray],\n        task_name: str,\n        task_type: str\n    ):\n        \"\"\"Plot predictions vs targets.\"\"\"\n        pred_array = np.concatenate(predictions) if isinstance(predictions[0], np.ndarray) else np.array(predictions)\n        target_array = np.concatenate(targets) if isinstance(targets[0], np.ndarray) else np.array(targets)\n        \n        if task_type == 'regression':\n            # Scatter plot for regression\n            plt.figure(figsize=(8, 6))\n            plt.scatter(target_array, pred_array, alpha=0.6, s=20)\n            \n            # Perfect prediction line\n            min_val = min(target_array.min(), pred_array.min())\n            max_val = max(target_array.max(), pred_array.max())\n            plt.plot([min_val, max_val], [min_val, max_val], 'r--', alpha=0.7, label='Perfect Prediction')\n            \n            plt.xlabel('True Values')\n            plt.ylabel('Predictions')\n            plt.title(f'Predictions vs True Values: {task_name}')\n            plt.legend()\n            \n            # Add correlation info\n            corr = np.corrcoef(target_array.flatten(), pred_array.flatten())[0, 1]\n            plt.text(0.05, 0.95, f'Correlation: {corr:.3f}', transform=plt.gca().transAxes,\n                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))\n        \n        else:\n            # Classification: confusion matrix\n            if pred_array.ndim > 1:\n                pred_classes = np.argmax(pred_array, axis=1)\n            else:\n                pred_classes = (pred_array > 0.5).astype(int)\n            \n            if target_array.ndim > 1:\n                target_classes = np.argmax(target_array, axis=1)\n            else:\n                target_classes = target_array.astype(int)\n            \n            cm = confusion_matrix(target_classes, pred_classes)\n            \n            plt.figure(figsize=(8, 6))\n            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')\n            plt.xlabel('Predicted Labels')\n            plt.ylabel('True Labels')\n            plt.title(f'Confusion Matrix: {task_name}')\n        \n        plt.tight_layout()\n        plot_path = self.output_dir / f'{task_name}_predictions.png'\n        plt.savefig(plot_path, dpi=300, bbox_inches='tight')\n        plt.close()\n        \n        if self.config.verbose:\n            print(f\"Predictions plot saved to {plot_path}\")\n\n\n# Available benchmark tasks\nclass AgePredictionBenchmark(SubjectBenchmark):\n    \"\"\"Age prediction benchmark.\"\"\"\n    \n    def __init__(self, **kwargs):\n        super().__init__(**kwargs)\n        self.task_name = \"age_prediction\"\n        self.metrics = ['mae', 'rmse', 'r2', 'pearson_r']\n\n\nclass SexClassificationBenchmark(SubjectBenchmark):\n    \"\"\"Sex classification benchmark.\"\"\"\n    \n    def __init__(self, **kwargs):\n        super().__init__(**kwargs)\n        self.task_name = \"sex_classification\"\n        self.metrics = ['accuracy', 'precision', 'recall', 'f1', 'auc']\n\n\nclass CognitiveScoreBenchmark(SubjectBenchmark):\n    \"\"\"Cognitive score prediction benchmark.\"\"\"\n    \n    def __init__(self, cognitive_measure: str = \"fluid_intelligence\", **kwargs):\n        super().__init__(**kwargs)\n        self.task_name = f\"cognitive_{cognitive_measure}\"\n        self.cognitive_measure = cognitive_measure\n        self.metrics = ['mae', 'rmse', 'r2', 'pearson_r', 'spearman_r']
+        self.results = {}
+        self.detailed_results = {}
+    
+    def evaluate(
+        self,
+        model: BaseConnectomeModel,
+        dataset,
+        task: BaseConnectomeTask,
+        metrics: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """Evaluate model on dataset with comprehensive metrics.
+        
+        Args:
+            model: Trained connectome model
+            dataset: Dataset to evaluate on
+            task: Prediction task
+            metrics: List of metrics to compute
+            
+        Returns:
+            Dictionary containing evaluation results
+        """
+        if metrics is None:
+            metrics = self.default_metrics.get(task.task_type, ['mae', 'accuracy'])
+        
+        print(f"Starting evaluation with {len(dataset)} samples")
+        print(f"Task: {task.get_task_info()}")
+        print(f"Metrics: {metrics}")
+        
+        start_time = time.time()
+        
+        # Cross-validation evaluation
+        cv_results = self._cross_validate(
+            model, dataset, task, metrics
+        )
+        
+        # Holdout evaluation
+        holdout_results = self._holdout_evaluate(
+            model, dataset, task, metrics
+        )
+        
+        # Combine results
+        evaluation_results = {
+            'cross_validation': cv_results,
+            'holdout': holdout_results,
+            'task_info': task.get_task_info(),
+            'model_info': {
+                'name': model.__class__.__name__,
+                'parameters': sum(p.numel() for p in model.parameters()),
+            },
+            'dataset_info': {
+                'size': len(dataset),
+                'features': dataset[0].x.shape[1] if hasattr(dataset[0], 'x') else 'unknown'
+            },
+            'evaluation_time': time.time() - start_time,
+            'config': self.config.__dict__
+        }
+        
+        # Save results
+        self._save_results(evaluation_results, task.task_name)
+        
+        # Generate report
+        self._generate_report(evaluation_results, task.task_name)
+        
+        return evaluation_results
+    
+    def _cross_validate(
+        self,
+        model: BaseConnectomeModel,
+        dataset,
+        task: BaseConnectomeTask,
+        metrics: List[str]
+    ) -> Dict[str, Any]:
+        """Perform cross-validation evaluation."""
+        print(f"Running {self.config.n_folds}-fold cross-validation...")
+        
+        # Prepare stratification labels if needed
+        if self.config.stratify and task.task_type in ['binary_classification', 'multiclass_classification']:
+            y_labels = []
+            for i in range(len(dataset)):
+                data = dataset[i]
+                if hasattr(data, 'y') and data.y is not None:
+                    if torch.is_tensor(data.y):
+                        y_labels.append(int(data.y.item()))
+                    else:
+                        y_labels.append(int(data.y))
+                else:
+                    y_labels.append(0)  # Default label
+            
+            kfold = StratifiedKFold(
+                n_splits=self.config.n_folds,
+                shuffle=True,
+                random_state=self.config.random_state
+            )
+            splits = list(kfold.split(range(len(dataset)), y_labels))
+        else:
+            kfold = KFold(
+                n_splits=self.config.n_folds,
+                shuffle=True,
+                random_state=self.config.random_state
+            )
+            splits = list(kfold.split(range(len(dataset))))
+        
+        fold_results = []
+        all_predictions = []
+        all_targets = []
+        
+        for fold, (train_idx, val_idx) in enumerate(splits):
+            if self.config.verbose:
+                print(f"  Fold {fold + 1}/{self.config.n_folds}")
+            
+            # Create fold datasets
+            train_data = [dataset[i] for i in train_idx]
+            val_data = [dataset[i] for i in val_idx]
+            
+            # Clone and train model for this fold
+            fold_model = type(model)(**model.get_config() if hasattr(model, 'get_config') else {})
+            fold_model.load_state_dict(model.state_dict())
+            
+            # Quick training on fold (simplified)
+            fold_trainer = self._create_trainer(fold_model, task)
+            
+            # Create data loaders
+            from torch_geometric.loader import DataLoader
+            train_loader = DataLoader(train_data, batch_size=8, shuffle=True)
+            val_loader = DataLoader(val_data, batch_size=16, shuffle=False)
+            
+            # Train for a few epochs (simplified for benchmarking)
+            fold_trainer.fit(train_loader, val_loader)
+            
+            # Evaluate fold
+            fold_results_dict = fold_trainer.evaluate(val_loader)
+            fold_results.append(fold_results_dict)
+            
+            # Store predictions for later analysis
+            predictions, targets = self._get_predictions_targets(fold_model, val_data, task)
+            all_predictions.extend(predictions)
+            all_targets.extend(targets)
+        
+        # Compute cross-validation statistics
+        cv_stats = self._compute_cv_statistics(fold_results, metrics)
+        
+        # Compute overall metrics on all predictions
+        if all_predictions and all_targets:
+            overall_metrics = self._compute_metrics(
+                np.array(all_predictions),
+                np.array(all_targets),
+                task.task_type,
+                metrics
+            )
+            cv_stats['overall_metrics'] = overall_metrics
+        
+        return {
+            'fold_results': fold_results,
+            'cv_statistics': cv_stats,
+            'all_predictions': all_predictions if self.config.save_predictions else None,
+            'all_targets': all_targets if self.config.save_predictions else None
+        }
+    
+    def _holdout_evaluate(
+        self,
+        model: BaseConnectomeModel,
+        dataset,
+        task: BaseConnectomeTask,
+        metrics: List[str]
+    ) -> Dict[str, Any]:
+        """Perform holdout evaluation."""
+        if self.config.verbose:
+            print("Running holdout evaluation...")
+        
+        # Split dataset
+        n_samples = len(dataset)
+        n_test = int(n_samples * self.config.test_size)
+        n_train = n_samples - n_test
+        
+        # Random split
+        np.random.seed(self.config.random_state)
+        indices = np.random.permutation(n_samples)
+        train_idx = indices[:n_train]
+        test_idx = indices[n_train:]
+        
+        # Create datasets
+        train_data = [dataset[i] for i in train_idx]
+        test_data = [dataset[i] for i in test_idx]
+        
+        # Train model
+        trainer = self._create_trainer(model, task)
+        
+        from torch_geometric.loader import DataLoader
+        train_loader = DataLoader(train_data, batch_size=8, shuffle=True)
+        test_loader = DataLoader(test_data, batch_size=16, shuffle=False)
+        
+        # Train model
+        trainer.fit(train_loader, test_loader)
+        
+        # Evaluate
+        test_results = trainer.evaluate(test_loader)
+        
+        # Get predictions for detailed analysis
+        predictions, targets = self._get_predictions_targets(model, test_data, task)
+        
+        # Compute additional metrics
+        detailed_metrics = self._compute_metrics(
+            np.array(predictions),
+            np.array(targets),
+            task.task_type,
+            metrics
+        )
+        
+        return {
+            'test_metrics': test_results,
+            'detailed_metrics': detailed_metrics,
+            'predictions': predictions if self.config.save_predictions else None,
+            'targets': targets if self.config.save_predictions else None,
+            'train_size': len(train_data),
+            'test_size': len(test_data)
+        }
+    
+    def _create_trainer(self, model: BaseConnectomeModel, task: BaseConnectomeTask):
+        """Create trainer for benchmarking."""
+        config = TrainingConfig(
+            batch_size=8,
+            learning_rate=1e-3,
+            max_epochs=20,  # Reduced for benchmarking
+            patience=5,
+            val_check_interval=1
+        )
+        
+        return AdvancedConnectomeTrainer(
+            model=model,
+            task=task,
+            config=config,
+            output_dir=self.output_dir / "training_temp",
+            use_wandb=False
+        )
+    
+    def _get_predictions_targets(self, model, dataset, task):
+        """Get model predictions and targets."""
+        model.eval()
+        predictions = []
+        targets = []
+        
+        with torch.no_grad():
+            for data in dataset:
+                # Get prediction
+                output = model(data)
+                if isinstance(output, dict):
+                    pred = output['predictions']
+                else:
+                    pred = output
+                
+                # Get target
+                target = task.prepare_targets([data])
+                target = task.normalize_targets(target)
+                
+                predictions.append(pred.cpu().numpy())
+                targets.append(target.cpu().numpy())
+        
+        return predictions, targets
+    
+    def _compute_cv_statistics(self, fold_results, metrics):
+        """Compute cross-validation statistics."""
+        cv_stats = {}
+        
+        # Collect metric values across folds
+        for metric in metrics:
+            values = []
+            for fold_result in fold_results:
+                if metric in fold_result:
+                    values.append(fold_result[metric])
+            
+            if values:
+                cv_stats[f"{metric}_mean"] = np.mean(values)
+                cv_stats[f"{metric}_std"] = np.std(values)
+                cv_stats[f"{metric}_values"] = values
+        
+        return cv_stats
+    
+    def _compute_metrics(
+        self,
+        predictions: np.ndarray,
+        targets: np.ndarray,
+        task_type: str,
+        metrics: List[str]
+    ) -> Dict[str, float]:
+        """Compute evaluation metrics."""
+        results = {}
+        
+        try:
+            if task_type == 'regression':
+                if 'mae' in metrics:
+                    results['mae'] = mean_absolute_error(targets, predictions)
+                if 'rmse' in metrics:
+                    results['rmse'] = np.sqrt(mean_squared_error(targets, predictions))
+                if 'r2' in metrics:
+                    results['r2'] = r2_score(targets, predictions)
+                if 'pearson_r' in metrics:
+                    corr, _ = pearsonr(targets.flatten(), predictions.flatten())
+                    results['pearson_r'] = corr if not np.isnan(corr) else 0.0
+                if 'spearman_r' in metrics:
+                    corr, _ = spearmanr(targets.flatten(), predictions.flatten())
+                    results['spearman_r'] = corr if not np.isnan(corr) else 0.0
+            
+            elif task_type in ['binary_classification', 'multiclass_classification']:
+                # Convert predictions to class labels if needed
+                if predictions.ndim > 1 and predictions.shape[1] > 1:
+                    pred_classes = np.argmax(predictions, axis=1)
+                    pred_probs = predictions
+                else:
+                    pred_classes = (predictions > 0.5).astype(int)
+                    pred_probs = predictions
+                
+                if targets.ndim > 1:
+                    target_classes = np.argmax(targets, axis=1)
+                else:
+                    target_classes = targets.astype(int)
+                
+                if 'accuracy' in metrics:
+                    results['accuracy'] = accuracy_score(target_classes, pred_classes)
+                if 'precision' in metrics:
+                    results['precision'] = precision_score(
+                        target_classes, pred_classes, average='weighted', zero_division=0
+                    )
+                if 'recall' in metrics:
+                    results['recall'] = recall_score(
+                        target_classes, pred_classes, average='weighted', zero_division=0
+                    )
+                if 'f1' in metrics:
+                    results['f1'] = f1_score(
+                        target_classes, pred_classes, average='weighted', zero_division=0
+                    )
+                if 'macro_f1' in metrics:
+                    results['macro_f1'] = f1_score(
+                        target_classes, pred_classes, average='macro', zero_division=0
+                    )
+                
+                # AUC metrics (only for binary or with probabilities)
+                if task_type == 'binary_classification' and pred_probs.ndim == 1:
+                    if 'auc' in metrics:
+                        try:
+                            results['auc'] = roc_auc_score(target_classes, pred_probs)
+                        except ValueError:
+                            results['auc'] = 0.5  # Random performance
+                    if 'ap' in metrics:
+                        try:
+                            results['ap'] = average_precision_score(target_classes, pred_probs)
+                        except ValueError:
+                            results['ap'] = 0.5
+        
+        except Exception as e:
+            print(f"Error computing metrics: {e}")
+            # Return default values
+            for metric in metrics:
+                results[metric] = 0.0
+        
+        return results
+    
+    def _save_results(self, results: Dict[str, Any], task_name: str):
+        """Save benchmark results to file."""
+        results_file = self.output_dir / f"{task_name}_results.json"
+        
+        # Convert numpy arrays to lists for JSON serialization
+        serializable_results = self._make_serializable(results)
+        
+        with open(results_file, 'w') as f:
+            json.dump(serializable_results, f, indent=2, default=str)
+        
+        if self.config.verbose:
+            print(f"Results saved to {results_file}")
+    
+    def _make_serializable(self, obj):
+        """Make object JSON serializable."""
+        if isinstance(obj, dict):
+            return {k: self._make_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._make_serializable(v) for v in obj]
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.int32, np.int64)):
+            return int(obj)
+        elif isinstance(obj, (np.float32, np.float64)):
+            return float(obj)
+        else:
+            return obj
+    
+    def _generate_report(self, results: Dict[str, Any], task_name: str):
+        """Generate comprehensive benchmark report."""
+        if self.config.verbose:
+            print("\n=== BENCHMARK REPORT ===")
+            print(f"Task: {task_name}")
+            print(f"Model: {results['model_info']['name']}")
+            print(f"Dataset Size: {results['dataset_info']['size']}")
+            print(f"Model Parameters: {results['model_info']['parameters']:,}")
+            
+            # Cross-validation results
+            if 'cross_validation' in results:
+                print("\n--- Cross-Validation Results ---")
+                cv_stats = results['cross_validation']['cv_statistics']
+                for key, value in cv_stats.items():
+                    if key.endswith('_mean'):
+                        metric = key.replace('_mean', '')
+                        std_key = f"{metric}_std"
+                        if std_key in cv_stats:
+                            print(f"{metric.upper()}: {value:.4f} ± {cv_stats[std_key]:.4f}")
+                        else:
+                            print(f"{metric.upper()}: {value:.4f}")
+            
+            # Holdout results
+            if 'holdout' in results:
+                print("\n--- Holdout Results ---")
+                holdout_metrics = results['holdout']['detailed_metrics']
+                for metric, value in holdout_metrics.items():
+                    print(f"{metric.upper()}: {value:.4f}")
+            
+            print(f"\nEvaluation Time: {results['evaluation_time']:.2f} seconds")
+        
+        # Generate plots
+        self._generate_plots(results, task_name)
+    
+    def _generate_plots(self, results: Dict[str, Any], task_name: str):
+        """Generate visualization plots for results."""
+        try:
+            # Cross-validation metrics plot
+            if 'cross_validation' in results and 'cv_statistics' in results['cross_validation']:
+                self._plot_cv_results(results['cross_validation']['cv_statistics'], task_name)
+            
+            # Prediction plots if available
+            if 'holdout' in results and results['holdout'].get('predictions'):
+                self._plot_predictions(
+                    results['holdout']['predictions'],
+                    results['holdout']['targets'],
+                    task_name,
+                    results['task_info']['task_type']
+                )
+        
+        except Exception as e:
+            print(f"Error generating plots: {e}")
+    
+    def _plot_cv_results(self, cv_stats: Dict[str, Any], task_name: str):
+        """Plot cross-validation results."""
+        # Find metrics with values across folds
+        metrics_data = {}
+        for key, value in cv_stats.items():
+            if key.endswith('_values') and isinstance(value, list):
+                metric_name = key.replace('_values', '')
+                metrics_data[metric_name] = value
+        
+        if not metrics_data:
+            return
+        
+        # Create plot
+        n_metrics = len(metrics_data)
+        fig, axes = plt.subplots(1, min(n_metrics, 4), figsize=(4*min(n_metrics, 4), 4))
+        
+        if n_metrics == 1:
+            axes = [axes]
+        elif n_metrics > 4:
+            axes = axes[:4]
+            metrics_data = dict(list(metrics_data.items())[:4])
+        
+        for idx, (metric, values) in enumerate(metrics_data.items()):
+            ax = axes[idx] if n_metrics > 1 else axes[0]
+            
+            # Box plot of cross-validation results
+            ax.boxplot(values)
+            ax.set_title(f'{metric.upper()}\
+Cross-Validation')
+            ax.set_ylabel('Score')
+            
+            # Add mean line
+            mean_val = np.mean(values)
+            ax.axhline(y=mean_val, color='r', linestyle='--', alpha=0.7, label=f'Mean: {mean_val:.3f}')
+            ax.legend()
+        
+        plt.suptitle(f'Cross-Validation Results: {task_name}')
+        plt.tight_layout()
+        
+        plot_path = self.output_dir / f'{task_name}_cv_results.png'
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        if self.config.verbose:
+            print(f"Cross-validation plot saved to {plot_path}")
+    
+    def _plot_predictions(
+        self,
+        predictions: List[np.ndarray],
+        targets: List[np.ndarray],
+        task_name: str,
+        task_type: str
+    ):
+        """Plot predictions vs targets."""
+        pred_array = np.concatenate(predictions) if isinstance(predictions[0], np.ndarray) else np.array(predictions)
+        target_array = np.concatenate(targets) if isinstance(targets[0], np.ndarray) else np.array(targets)
+        
+        if task_type == 'regression':
+            # Scatter plot for regression
+            plt.figure(figsize=(8, 6))
+            plt.scatter(target_array, pred_array, alpha=0.6, s=20)
+            
+            # Perfect prediction line
+            min_val = min(target_array.min(), pred_array.min())
+            max_val = max(target_array.max(), pred_array.max())
+            plt.plot([min_val, max_val], [min_val, max_val], 'r--', alpha=0.7, label='Perfect Prediction')
+            
+            plt.xlabel('True Values')
+            plt.ylabel('Predictions')
+            plt.title(f'Predictions vs True Values: {task_name}')
+            plt.legend()
+            
+            # Add correlation info
+            corr = np.corrcoef(target_array.flatten(), pred_array.flatten())[0, 1]
+            plt.text(0.05, 0.95, f'Correlation: {corr:.3f}', transform=plt.gca().transAxes,
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        else:
+            # Classification: confusion matrix
+            if pred_array.ndim > 1:
+                pred_classes = np.argmax(pred_array, axis=1)
+            else:
+                pred_classes = (pred_array > 0.5).astype(int)
+            
+            if target_array.ndim > 1:
+                target_classes = np.argmax(target_array, axis=1)
+            else:
+                target_classes = target_array.astype(int)
+            
+            cm = confusion_matrix(target_classes, pred_classes)
+            
+            plt.figure(figsize=(8, 6))
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+            plt.xlabel('Predicted Labels')
+            plt.ylabel('True Labels')
+            plt.title(f'Confusion Matrix: {task_name}')
+        
+        plt.tight_layout()
+        plot_path = self.output_dir / f'{task_name}_predictions.png'
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        if self.config.verbose:
+            print(f"Predictions plot saved to {plot_path}")
+
+
+# Available benchmark tasks
+class AgePredictionBenchmark(SubjectBenchmark):
+    """Age prediction benchmark."""
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.task_name = "age_prediction"
+        self.metrics = ['mae', 'rmse', 'r2', 'pearson_r']
+
+
+class SexClassificationBenchmark(SubjectBenchmark):
+    """Sex classification benchmark."""
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.task_name = "sex_classification"
+        self.metrics = ['accuracy', 'precision', 'recall', 'f1', 'auc']
+
+
+class CognitiveScoreBenchmark(SubjectBenchmark):
+    """Cognitive score prediction benchmark."""
+    
+    def __init__(self, cognitive_measure: str = "fluid_intelligence", **kwargs):
+        super().__init__(**kwargs)
+        self.task_name = f"cognitive_{cognitive_measure}"
+        self.cognitive_measure = cognitive_measure
+        self.metrics = ['mae', 'rmse', 'r2', 'pearson_r', 'spearman_r']

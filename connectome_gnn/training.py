@@ -46,4 +46,436 @@ class ConnectomeTrainer:
         device: torch.device = torch.device('cpu'),
         output_dir: Optional[Path] = None,
         gradient_checkpointing: bool = False,
-    ):\n        self.model = model\n        self.task = task\n        self.batch_size = batch_size\n        self.learning_rate = learning_rate\n        self.weight_decay = weight_decay\n        self.patience = patience\n        self.device = device\n        self.output_dir = output_dir or Path('./outputs')\n        self.gradient_checkpointing = gradient_checkpointing\n        \n        # Training state\n        self.epoch = 0\n        self.best_val_loss = float('inf')\n        self.best_val_metrics = {}\n        self.patience_counter = 0\n        self.training_history = {\n            'train_loss': [],\n            'val_loss': [],\n            'train_metrics': [],\n            'val_metrics': []\n        }\n        \n        # Setup optimizer and scheduler\n        self.optimizer = torch.optim.Adam(\n            self.model.parameters(),\n            lr=learning_rate,\n            weight_decay=weight_decay\n        )\n        \n        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(\n            self.optimizer,\n            mode='min',\n            factor=0.5,\n            patience=patience // 2,\n            verbose=True\n        )\n        \n        # Create output directory\n        self.output_dir.mkdir(parents=True, exist_ok=True)\n        \n        # Setup logging\n        self.log_file = self.output_dir / 'training.log'\n        \n    def log(self, message: str):\n        \"\"\"Log message to console and file.\"\"\"\n        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')\n        log_message = f\"[{timestamp}] {message}\"\n        print(log_message)\n        \n        with open(self.log_file, 'a') as f:\n            f.write(log_message + '\\n')\n    \n    def prepare_data_splits(\n        self, \n        dataset, \n        train_ratio: float = 0.7,\n        val_ratio: float = 0.15,\n        test_ratio: float = 0.15,\n        stratify: bool = False\n    ) -> Tuple[List, List, List]:\n        \"\"\"Split dataset into train/val/test splits.\n        \n        Args:\n            dataset: Full dataset\n            train_ratio: Fraction for training\n            val_ratio: Fraction for validation  \n            test_ratio: Fraction for testing\n            stratify: Whether to stratify splits based on targets\n            \n        Returns:\n            Tuple of (train_indices, val_indices, test_indices)\n        \"\"\"\n        assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6, \"Ratios must sum to 1.0\"\n        \n        n_samples = len(dataset)\n        indices = list(range(n_samples))\n        \n        if stratify and self.task.task_type in ['classification', 'multi_class']:\n            # Get targets for stratification\n            targets = []\n            for i in indices:\n                data = dataset[i]\n                if hasattr(data, 'y') and data.y is not None:\n                    targets.append(data.y.item() if torch.is_tensor(data.y) else data.y)\n                else:\n                    targets.append(0)  # Fallback\n            \n            # First split: train vs (val + test)\n            train_indices, temp_indices = train_test_split(\n                indices, \n                train_size=train_ratio,\n                stratify=targets,\n                random_state=42\n            )\n            \n            # Second split: val vs test\n            temp_targets = [targets[i] for i in temp_indices]\n            val_size = val_ratio / (val_ratio + test_ratio)\n            \n            val_indices, test_indices = train_test_split(\n                temp_indices,\n                train_size=val_size,\n                stratify=temp_targets,\n                random_state=42\n            )\n        else:\n            # Random split\n            n_train = int(n_samples * train_ratio)\n            n_val = int(n_samples * val_ratio)\n            n_test = n_samples - n_train - n_val\n            \n            train_indices = indices[:n_train]\n            val_indices = indices[n_train:n_train + n_val]\n            test_indices = indices[n_train + n_val:]\n        \n        self.log(f\"Data splits: train={len(train_indices)}, val={len(val_indices)}, test={len(test_indices)}\")\n        \n        return train_indices, val_indices, test_indices\n    \n    def create_data_loaders(\n        self, \n        dataset,\n        train_indices: List[int],\n        val_indices: List[int],\n        test_indices: Optional[List[int]] = None\n    ) -> Tuple[DataLoader, DataLoader, Optional[DataLoader]]:\n        \"\"\"Create data loaders for training, validation, and testing.\"\"\"\n        \n        # Create subset datasets\n        train_dataset = [dataset[i] for i in train_indices]\n        val_dataset = [dataset[i] for i in val_indices]\n        test_dataset = [dataset[i] for i in test_indices] if test_indices else None\n        \n        # Prepare targets and fit task statistics\n        train_targets = self.task.prepare_targets(train_dataset)\n        self.task.fit_target_statistics(train_targets)\n        \n        # Create data loaders\n        train_loader = DataLoader(\n            train_dataset,\n            batch_size=self.batch_size,\n            shuffle=True,\n            num_workers=4,\n            pin_memory=True if self.device.type == 'cuda' else False\n        )\n        \n        val_loader = DataLoader(\n            val_dataset,\n            batch_size=self.batch_size * 2,  # Larger batch for validation\n            shuffle=False,\n            num_workers=4,\n            pin_memory=True if self.device.type == 'cuda' else False\n        )\n        \n        test_loader = None\n        if test_dataset:\n            test_loader = DataLoader(\n                test_dataset,\n                batch_size=self.batch_size * 2,\n                shuffle=False,\n                num_workers=4,\n                pin_memory=True if self.device.type == 'cuda' else False\n            )\n        \n        return train_loader, val_loader, test_loader\n    \n    def train_epoch(self, train_loader: DataLoader) -> Tuple[float, Dict[str, float]]:\n        \"\"\"Train for one epoch.\"\"\"\n        self.model.train()\n        \n        epoch_loss = 0.0\n        all_predictions = []\n        all_targets = []\n        \n        for batch_idx, batch in enumerate(train_loader):\n            batch = batch.to(self.device)\n            \n            # Forward pass\n            self.optimizer.zero_grad()\n            \n            predictions = self.model(batch)\n            targets = self.task.prepare_targets([batch]).to(self.device)\n            \n            # Normalize targets if needed\n            targets = self.task.normalize_targets(targets)\n            \n            # Compute loss\n            loss = self.task.compute_loss(predictions, targets)\n            \n            # Backward pass\n            loss.backward()\n            \n            # Gradient clipping\n            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)\n            \n            self.optimizer.step()\n            \n            # Accumulate metrics\n            epoch_loss += loss.item()\n            all_predictions.append(predictions.detach().cpu())\n            all_targets.append(targets.detach().cpu())\n        \n        # Compute epoch metrics\n        epoch_loss /= len(train_loader)\n        \n        if all_predictions:\n            predictions_tensor = torch.cat(all_predictions, dim=0)\n            targets_tensor = torch.cat(all_targets, dim=0)\n            metrics = self.task.compute_metrics(predictions_tensor, targets_tensor)\n        else:\n            metrics = {}\n        \n        return epoch_loss, metrics\n    \n    def validate_epoch(self, val_loader: DataLoader) -> Tuple[float, Dict[str, float]]:\n        \"\"\"Validate for one epoch.\"\"\"\n        self.model.eval()\n        \n        epoch_loss = 0.0\n        all_predictions = []\n        all_targets = []\n        \n        with torch.no_grad():\n            for batch in val_loader:\n                batch = batch.to(self.device)\n                \n                predictions = self.model(batch)\n                targets = self.task.prepare_targets([batch]).to(self.device)\n                \n                # Normalize targets if needed\n                targets = self.task.normalize_targets(targets)\n                \n                loss = self.task.compute_loss(predictions, targets)\n                \n                epoch_loss += loss.item()\n                all_predictions.append(predictions.cpu())\n                all_targets.append(targets.cpu())\n        \n        # Compute epoch metrics\n        epoch_loss /= len(val_loader)\n        \n        if all_predictions:\n            predictions_tensor = torch.cat(all_predictions, dim=0)\n            targets_tensor = torch.cat(all_targets, dim=0)\n            metrics = self.task.compute_metrics(predictions_tensor, targets_tensor)\n        else:\n            metrics = {}\n        \n        return epoch_loss, metrics\n    \n    def save_checkpoint(self, is_best: bool = False):\n        \"\"\"Save training checkpoint.\"\"\"\n        checkpoint = {\n            'epoch': self.epoch,\n            'model_state_dict': self.model.state_dict(),\n            'optimizer_state_dict': self.optimizer.state_dict(),\n            'scheduler_state_dict': self.scheduler.state_dict(),\n            'best_val_loss': self.best_val_loss,\n            'best_val_metrics': self.best_val_metrics,\n            'training_history': self.training_history,\n            'task_info': self.task.get_task_info(),\n            'model_config': self.model.get_model_summary()\n        }\n        \n        # Save latest checkpoint\n        checkpoint_path = self.output_dir / 'latest_checkpoint.pth'\n        torch.save(checkpoint, checkpoint_path)\n        \n        # Save best checkpoint\n        if is_best:\n            best_path = self.output_dir / 'best_checkpoint.pth'\n            torch.save(checkpoint, best_path)\n            self.log(f\"Saved best checkpoint to {best_path}\")\n    \n    def load_checkpoint(self, checkpoint_path: Path) -> Dict[str, Any]:\n        \"\"\"Load training checkpoint.\"\"\"\n        checkpoint = torch.load(checkpoint_path, map_location=self.device)\n        \n        self.model.load_state_dict(checkpoint['model_state_dict'])\n        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])\n        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])\n        \n        self.epoch = checkpoint['epoch']\n        self.best_val_loss = checkpoint['best_val_loss']\n        self.best_val_metrics = checkpoint['best_val_metrics']\n        self.training_history = checkpoint['training_history']\n        \n        self.log(f\"Loaded checkpoint from epoch {self.epoch}\")\n        return checkpoint\n    \n    def fit(\n        self, \n        dataset,\n        epochs: int = 100,\n        resume_from: Optional[Path] = None,\n        train_ratio: float = 0.7,\n        val_ratio: float = 0.15\n    ):\n        \"\"\"Fit the model on the dataset.\n        \n        Args:\n            dataset: Training dataset\n            epochs: Number of epochs to train\n            resume_from: Path to checkpoint to resume from\n            train_ratio: Fraction of data for training\n            val_ratio: Fraction of data for validation\n        \"\"\"\n        self.log(f\"Starting training for {epochs} epochs\")\n        self.log(f\"Model: {self.model.__class__.__name__}\")\n        self.log(f\"Task: {self.task.get_task_info()}\")\n        self.log(f\"Device: {self.device}\")\n        \n        # Resume from checkpoint if provided\n        if resume_from and resume_from.exists():\n            self.load_checkpoint(resume_from)\n        \n        # Prepare data splits\n        train_indices, val_indices, test_indices = self.prepare_data_splits(\n            dataset, train_ratio, val_ratio, 1.0 - train_ratio - val_ratio\n        )\n        \n        # Create data loaders\n        train_loader, val_loader, _ = self.create_data_loaders(\n            dataset, train_indices, val_indices, test_indices\n        )\n        \n        # Training loop\n        start_time = time.time()\n        \n        for epoch in range(self.epoch, epochs):\n            self.epoch = epoch\n            \n            # Train\n            train_loss, train_metrics = self.train_epoch(train_loader)\n            \n            # Validate\n            val_loss, val_metrics = self.validate_epoch(val_loader)\n            \n            # Update learning rate\n            self.scheduler.step(val_loss)\n            \n            # Store history\n            self.training_history['train_loss'].append(train_loss)\n            self.training_history['val_loss'].append(val_loss)\n            self.training_history['train_metrics'].append(train_metrics)\n            self.training_history['val_metrics'].append(val_metrics)\n            \n            # Check for improvement\n            is_best = val_loss < self.best_val_loss\n            if is_best:\n                self.best_val_loss = val_loss\n                self.best_val_metrics = val_metrics.copy()\n                self.patience_counter = 0\n            else:\n                self.patience_counter += 1\n            \n            # Log progress\n            self.log(\n                f\"Epoch {epoch+1}/{epochs} - \"\n                f\"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}\"\n            )\n            \n            # Log key metrics\n            for metric_name, value in val_metrics.items():\n                if metric_name in ['mae', 'rmse', 'accuracy', 'auc', 'f1']:\n                    self.log(f\"  Val {metric_name}: {value:.4f}\")\n            \n            # Save checkpoint\n            if (epoch + 1) % 10 == 0 or is_best:\n                self.save_checkpoint(is_best)\n            \n            # Early stopping\n            if self.patience_counter >= self.patience:\n                self.log(f\"Early stopping triggered after {self.patience} epochs without improvement\")\n                break\n        \n        # Training completed\n        total_time = time.time() - start_time\n        self.log(f\"Training completed in {total_time:.2f} seconds\")\n        self.log(f\"Best validation loss: {self.best_val_loss:.4f}\")\n        \n        # Save final results\n        self.save_training_summary()\n    \n    def save_training_summary(self):\n        \"\"\"Save training summary and history.\"\"\"\n        summary = {\n            'model_type': self.model.__class__.__name__,\n            'task_info': self.task.get_task_info(),\n            'training_config': {\n                'batch_size': self.batch_size,\n                'learning_rate': self.learning_rate,\n                'weight_decay': self.weight_decay,\n                'patience': self.patience\n            },\n            'best_validation_loss': self.best_val_loss,\n            'best_validation_metrics': self.best_val_metrics,\n            'total_epochs': self.epoch + 1,\n            'model_parameters': self.model.count_parameters()\n        }\n        \n        # Save summary\n        summary_path = self.output_dir / 'training_summary.json'\n        with open(summary_path, 'w') as f:\n            json.dump(summary, f, indent=2, default=str)\n        \n        # Save history\n        history_path = self.output_dir / 'training_history.json'\n        with open(history_path, 'w') as f:\n            json.dump(self.training_history, f, indent=2, default=str)\n        \n        self.log(f\"Training summary saved to {summary_path}\")\n    \n    def save_best_model(self, output_path: Path):\n        \"\"\"Save the best model state.\"\"\"\n        best_checkpoint_path = self.output_dir / 'best_checkpoint.pth'\n        \n        if best_checkpoint_path.exists():\n            checkpoint = torch.load(best_checkpoint_path, map_location='cpu')\n            \n            # Save only the model state and essential info\n            model_save = {\n                'model_state_dict': checkpoint['model_state_dict'],\n                'model_config': checkpoint['model_config'],\n                'task_info': checkpoint['task_info'],\n                'best_val_metrics': checkpoint['best_val_metrics']\n            }\n            \n            torch.save(model_save, output_path)\n            self.log(f\"Best model saved to {output_path}\")\n        else:\n            self.log(\"No best checkpoint found to save\")
+    ):
+        self.model = model
+        self.task = task
+        self.batch_size = batch_size
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.patience = patience
+        self.device = device
+        self.output_dir = output_dir or Path('./outputs')
+        self.gradient_checkpointing = gradient_checkpointing
+        
+        # Training state
+        self.epoch = 0
+        self.best_val_loss = float('inf')
+        self.best_val_metrics = {}
+        self.patience_counter = 0
+        self.training_history = {
+            'train_loss': [],
+            'val_loss': [],
+            'train_metrics': [],
+            'val_metrics': []
+        }
+        
+        # Setup optimizer and scheduler
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay
+        )
+        
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer,
+            mode='min',
+            factor=0.5,
+            patience=patience // 2,
+            verbose=True
+        )
+        
+        # Create output directory
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Setup logging
+        self.log_file = self.output_dir / 'training.log'
+        
+    def log(self, message: str):
+        """Log message to console and file."""
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+        log_message = f"[{timestamp}] {message}"
+        print(log_message)
+        
+        with open(self.log_file, 'a') as f:
+            f.write(log_message + '\n')
+    
+    def prepare_data_splits(
+        self, 
+        dataset, 
+        train_ratio: float = 0.7,
+        val_ratio: float = 0.15,
+        test_ratio: float = 0.15,
+        stratify: bool = False
+    ) -> Tuple[List, List, List]:
+        """Split dataset into train/val/test splits.
+        
+        Args:
+            dataset: Full dataset
+            train_ratio: Fraction for training
+            val_ratio: Fraction for validation  
+            test_ratio: Fraction for testing
+            stratify: Whether to stratify splits based on targets
+            
+        Returns:
+            Tuple of (train_indices, val_indices, test_indices)
+        """
+        assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6, "Ratios must sum to 1.0"
+        
+        n_samples = len(dataset)
+        indices = list(range(n_samples))
+        
+        if stratify and self.task.task_type in ['classification', 'multi_class']:
+            # Get targets for stratification
+            targets = []
+            for i in indices:
+                data = dataset[i]
+                if hasattr(data, 'y') and data.y is not None:
+                    targets.append(data.y.item() if torch.is_tensor(data.y) else data.y)
+                else:
+                    targets.append(0)  # Fallback
+            
+            # First split: train vs (val + test)
+            train_indices, temp_indices = train_test_split(
+                indices, 
+                train_size=train_ratio,
+                stratify=targets,
+                random_state=42
+            )
+            
+            # Second split: val vs test
+            temp_targets = [targets[i] for i in temp_indices]
+            val_size = val_ratio / (val_ratio + test_ratio)
+            
+            val_indices, test_indices = train_test_split(
+                temp_indices,
+                train_size=val_size,
+                stratify=temp_targets,
+                random_state=42
+            )
+        else:
+            # Random split
+            n_train = int(n_samples * train_ratio)
+            n_val = int(n_samples * val_ratio)
+            n_test = n_samples - n_train - n_val
+            
+            train_indices = indices[:n_train]
+            val_indices = indices[n_train:n_train + n_val]
+            test_indices = indices[n_train + n_val:]
+        
+        self.log(f"Data splits: train={len(train_indices)}, val={len(val_indices)}, test={len(test_indices)}")
+        
+        return train_indices, val_indices, test_indices
+    
+    def create_data_loaders(
+        self, 
+        dataset,
+        train_indices: List[int],
+        val_indices: List[int],
+        test_indices: Optional[List[int]] = None
+    ) -> Tuple[DataLoader, DataLoader, Optional[DataLoader]]:
+        """Create data loaders for training, validation, and testing."""
+        
+        # Create subset datasets
+        train_dataset = [dataset[i] for i in train_indices]
+        val_dataset = [dataset[i] for i in val_indices]
+        test_dataset = [dataset[i] for i in test_indices] if test_indices else None
+        
+        # Prepare targets and fit task statistics
+        train_targets = self.task.prepare_targets(train_dataset)
+        self.task.fit_target_statistics(train_targets)
+        
+        # Create data loaders
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=4,
+            pin_memory=True if self.device.type == 'cuda' else False
+        )
+        
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=self.batch_size * 2,  # Larger batch for validation
+            shuffle=False,
+            num_workers=4,
+            pin_memory=True if self.device.type == 'cuda' else False
+        )
+        
+        test_loader = None
+        if test_dataset:
+            test_loader = DataLoader(
+                test_dataset,
+                batch_size=self.batch_size * 2,
+                shuffle=False,
+                num_workers=4,
+                pin_memory=True if self.device.type == 'cuda' else False
+            )
+        
+        return train_loader, val_loader, test_loader
+    
+    def train_epoch(self, train_loader: DataLoader) -> Tuple[float, Dict[str, float]]:
+        """Train for one epoch."""
+        self.model.train()
+        
+        epoch_loss = 0.0
+        all_predictions = []
+        all_targets = []
+        
+        for batch_idx, batch in enumerate(train_loader):
+            batch = batch.to(self.device)
+            
+            # Forward pass
+            self.optimizer.zero_grad()
+            
+            predictions = self.model(batch)
+            targets = self.task.prepare_targets([batch]).to(self.device)
+            
+            # Normalize targets if needed
+            targets = self.task.normalize_targets(targets)
+            
+            # Compute loss
+            loss = self.task.compute_loss(predictions, targets)
+            
+            # Backward pass
+            loss.backward()
+            
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            
+            self.optimizer.step()
+            
+            # Accumulate metrics
+            epoch_loss += loss.item()
+            all_predictions.append(predictions.detach().cpu())
+            all_targets.append(targets.detach().cpu())
+        
+        # Compute epoch metrics
+        epoch_loss /= len(train_loader)
+        
+        if all_predictions:
+            predictions_tensor = torch.cat(all_predictions, dim=0)
+            targets_tensor = torch.cat(all_targets, dim=0)
+            metrics = self.task.compute_metrics(predictions_tensor, targets_tensor)
+        else:
+            metrics = {}
+        
+        return epoch_loss, metrics
+    
+    def validate_epoch(self, val_loader: DataLoader) -> Tuple[float, Dict[str, float]]:
+        """Validate for one epoch."""
+        self.model.eval()
+        
+        epoch_loss = 0.0
+        all_predictions = []
+        all_targets = []
+        
+        with torch.no_grad():
+            for batch in val_loader:
+                batch = batch.to(self.device)
+                
+                predictions = self.model(batch)
+                targets = self.task.prepare_targets([batch]).to(self.device)
+                
+                # Normalize targets if needed
+                targets = self.task.normalize_targets(targets)
+                
+                loss = self.task.compute_loss(predictions, targets)
+                
+                epoch_loss += loss.item()
+                all_predictions.append(predictions.cpu())
+                all_targets.append(targets.cpu())
+        
+        # Compute epoch metrics
+        epoch_loss /= len(val_loader)
+        
+        if all_predictions:
+            predictions_tensor = torch.cat(all_predictions, dim=0)
+            targets_tensor = torch.cat(all_targets, dim=0)
+            metrics = self.task.compute_metrics(predictions_tensor, targets_tensor)
+        else:
+            metrics = {}
+        
+        return epoch_loss, metrics
+    
+    def save_checkpoint(self, is_best: bool = False):
+        """Save training checkpoint."""
+        checkpoint = {
+            'epoch': self.epoch,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
+            'best_val_loss': self.best_val_loss,
+            'best_val_metrics': self.best_val_metrics,
+            'training_history': self.training_history,
+            'task_info': self.task.get_task_info(),
+            'model_config': self.model.get_model_summary()
+        }
+        
+        # Save latest checkpoint
+        checkpoint_path = self.output_dir / 'latest_checkpoint.pth'
+        torch.save(checkpoint, checkpoint_path)
+        
+        # Save best checkpoint
+        if is_best:
+            best_path = self.output_dir / 'best_checkpoint.pth'
+            torch.save(checkpoint, best_path)
+            self.log(f"Saved best checkpoint to {best_path}")
+    
+    def load_checkpoint(self, checkpoint_path: Path) -> Dict[str, Any]:
+        """Load training checkpoint."""
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        self.epoch = checkpoint['epoch']
+        self.best_val_loss = checkpoint['best_val_loss']
+        self.best_val_metrics = checkpoint['best_val_metrics']
+        self.training_history = checkpoint['training_history']
+        
+        self.log(f"Loaded checkpoint from epoch {self.epoch}")
+        return checkpoint
+    
+    def fit(
+        self, 
+        dataset,
+        epochs: int = 100,
+        resume_from: Optional[Path] = None,
+        train_ratio: float = 0.7,
+        val_ratio: float = 0.15
+    ):
+        """Fit the model on the dataset.
+        
+        Args:
+            dataset: Training dataset
+            epochs: Number of epochs to train
+            resume_from: Path to checkpoint to resume from
+            train_ratio: Fraction of data for training
+            val_ratio: Fraction of data for validation
+        """
+        self.log(f"Starting training for {epochs} epochs")
+        self.log(f"Model: {self.model.__class__.__name__}")
+        self.log(f"Task: {self.task.get_task_info()}")
+        self.log(f"Device: {self.device}")
+        
+        # Resume from checkpoint if provided
+        if resume_from and resume_from.exists():
+            self.load_checkpoint(resume_from)
+        
+        # Prepare data splits
+        train_indices, val_indices, test_indices = self.prepare_data_splits(
+            dataset, train_ratio, val_ratio, 1.0 - train_ratio - val_ratio
+        )
+        
+        # Create data loaders
+        train_loader, val_loader, _ = self.create_data_loaders(
+            dataset, train_indices, val_indices, test_indices
+        )
+        
+        # Training loop
+        start_time = time.time()
+        
+        for epoch in range(self.epoch, epochs):
+            self.epoch = epoch
+            
+            # Train
+            train_loss, train_metrics = self.train_epoch(train_loader)
+            
+            # Validate
+            val_loss, val_metrics = self.validate_epoch(val_loader)
+            
+            # Update learning rate
+            self.scheduler.step(val_loss)
+            
+            # Store history
+            self.training_history['train_loss'].append(train_loss)
+            self.training_history['val_loss'].append(val_loss)
+            self.training_history['train_metrics'].append(train_metrics)
+            self.training_history['val_metrics'].append(val_metrics)
+            
+            # Check for improvement
+            is_best = val_loss < self.best_val_loss
+            if is_best:
+                self.best_val_loss = val_loss
+                self.best_val_metrics = val_metrics.copy()
+                self.patience_counter = 0
+            else:
+                self.patience_counter += 1
+            
+            # Log progress
+            self.log(
+                f"Epoch {epoch+1}/{epochs} - "
+                f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
+            )
+            
+            # Log key metrics
+            for metric_name, value in val_metrics.items():
+                if metric_name in ['mae', 'rmse', 'accuracy', 'auc', 'f1']:
+                    self.log(f"  Val {metric_name}: {value:.4f}")
+            
+            # Save checkpoint
+            if (epoch + 1) % 10 == 0 or is_best:
+                self.save_checkpoint(is_best)
+            
+            # Early stopping
+            if self.patience_counter >= self.patience:
+                self.log(f"Early stopping triggered after {self.patience} epochs without improvement")
+                break
+        
+        # Training completed
+        total_time = time.time() - start_time
+        self.log(f"Training completed in {total_time:.2f} seconds")
+        self.log(f"Best validation loss: {self.best_val_loss:.4f}")
+        
+        # Save final results
+        self.save_training_summary()
+    
+    def save_training_summary(self):
+        """Save training summary and history."""
+        summary = {
+            'model_type': self.model.__class__.__name__,
+            'task_info': self.task.get_task_info(),
+            'training_config': {
+                'batch_size': self.batch_size,
+                'learning_rate': self.learning_rate,
+                'weight_decay': self.weight_decay,
+                'patience': self.patience
+            },
+            'best_validation_loss': self.best_val_loss,
+            'best_validation_metrics': self.best_val_metrics,
+            'total_epochs': self.epoch + 1,
+            'model_parameters': self.model.count_parameters()
+        }
+        
+        # Save summary
+        summary_path = self.output_dir / 'training_summary.json'
+        with open(summary_path, 'w') as f:
+            json.dump(summary, f, indent=2, default=str)
+        
+        # Save history
+        history_path = self.output_dir / 'training_history.json'
+        with open(history_path, 'w') as f:
+            json.dump(self.training_history, f, indent=2, default=str)
+        
+        self.log(f"Training summary saved to {summary_path}")
+    
+    def save_best_model(self, output_path: Path):
+        """Save the best model state."""
+        best_checkpoint_path = self.output_dir / 'best_checkpoint.pth'
+        
+        if best_checkpoint_path.exists():
+            checkpoint = torch.load(best_checkpoint_path, map_location='cpu')
+            
+            # Save only the model state and essential info
+            model_save = {
+                'model_state_dict': checkpoint['model_state_dict'],
+                'model_config': checkpoint['model_config'],
+                'task_info': checkpoint['task_info'],
+                'best_val_metrics': checkpoint['best_val_metrics']
+            }
+            
+            torch.save(model_save, output_path)
+            self.log(f"Best model saved to {output_path}")
+        else:
+            self.log("No best checkpoint found to save")

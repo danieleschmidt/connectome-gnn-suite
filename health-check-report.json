@@ -1,7 +1,7 @@
 {
-  "timestamp": "2025-08-02T09:19:13.026154+00:00",
+  "timestamp": "2025-08-10T12:19:14.941410+00:00",
   "overall_health": "good",
-  "score": 78,
+  "score": 77,
   "checks": {
     "documentation": {
       "score": 27,
@@ -127,7 +127,7 @@
         },
         "test_coverage": {
           "tests_dir_exists": true,
-          "test_files_count": 7,
+          "test_files_count": 12,
           "status": "pass"
         }
       }
@@ -185,9 +185,9 @@
       }
     },
     "automation": {
-      "score": 9,
+      "score": 8,
       "max_score": 9,
-      "percentage": 100,
+      "percentage": 89,
       "status": "pass",
       "checks": {
         "workflow_templates": {
@@ -213,7 +213,7 @@
           "status": "pass"
         },
         "dev_environment": {
-          "dev_files_present": 2,
+          "dev_files_present": 1,
           "status": "pass"
         }
       }

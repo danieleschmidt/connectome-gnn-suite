@@ -34,4 +34,641 @@ class BrainGNNExplainer:
     """
     
     def __init__(
-        self,\n        model: BaseConnectomeModel,\n        device: torch.device = None\n    ):\n        self.model = model\n        self.device = device or torch.device('cpu')\n        self.model.to(self.device)\n        \n        # Initialize attribution methods\n        self.attribution_methods = {\n            'saliency': Saliency(self.model),\n            'integrated_gradients': IntegratedGradients(self.model),\n            'gradient_shap': GradientShap(self.model),\n            'input_x_gradient': InputXGradient(self.model),\n            'guided_backprop': GuidedBackprop(self.model)\n        }\n        \n        # Layer attribution methods (for intermediate layers)\n        self.layer_methods = {}\n        \n        # Store explanations\n        self.explanations = {}\n    \n    def explain_prediction(\n        self,\n        data,\n        target_class: Optional[int] = None,\n        method: str = 'integrated_gradients',\n        baseline: str = 'zero',\n        n_steps: int = 50\n    ) -> Dict[str, torch.Tensor]:\n        \"\"\"Generate explanation for a single prediction.\n        \n        Args:\n            data: Input data (PyTorch Geometric Data object)\n            target_class: Target class for explanation (None for regression)\n            method: Attribution method to use\n            baseline: Baseline for integrated gradients ('zero', 'random', 'mean')\n            n_steps: Number of steps for integrated gradients\n            \n        Returns:\n            Dictionary containing node and edge attributions\n        \"\"\"\n        self.model.eval()\n        \n        # Prepare input\n        x = data.x.to(self.device).requires_grad_(True)\n        edge_index = data.edge_index.to(self.device)\n        edge_attr = data.edge_attr.to(self.device).requires_grad_(True) if data.edge_attr is not None else None\n        \n        # Create baseline\n        if method in ['integrated_gradients', 'gradient_shap']:\n            if baseline == 'zero':\n                x_baseline = torch.zeros_like(x)\n                edge_baseline = torch.zeros_like(edge_attr) if edge_attr is not None else None\n            elif baseline == 'random':\n                x_baseline = torch.randn_like(x)\n                edge_baseline = torch.randn_like(edge_attr) if edge_attr is not None else None\n            elif baseline == 'mean':\n                x_baseline = torch.mean(x, dim=0, keepdim=True).expand_as(x)\n                edge_baseline = torch.mean(edge_attr, dim=0, keepdim=True).expand_as(edge_attr) if edge_attr is not None else None\n        else:\n            x_baseline = edge_baseline = None\n        \n        # Forward function for attribution\n        def forward_func(*inputs):\n            x_input, edge_attr_input = inputs[0], inputs[1] if len(inputs) > 1 else None\n            \n            # Create temporary data object\n            temp_data = type(data)()\n            temp_data.x = x_input\n            temp_data.edge_index = edge_index\n            temp_data.edge_attr = edge_attr_input\n            \n            # Get prediction\n            outputs = self.model(temp_data)\n            \n            if isinstance(outputs, dict):\n                predictions = outputs['predictions']\n            else:\n                predictions = outputs\n            \n            if target_class is not None:\n                return predictions[:, target_class] if predictions.dim() > 1 else predictions\n            else:\n                return predictions.squeeze() if predictions.dim() > 1 else predictions\n        \n        # Compute attributions\n        attr_method = self.attribution_methods[method]\n        \n        if method == 'integrated_gradients':\n            if edge_attr is not None:\n                node_attr, edge_attr_attr = attr_method.attribute(\n                    (x, edge_attr),\n                    baselines=(x_baseline, edge_baseline),\n                    n_steps=n_steps,\n                    return_convergence_delta=False\n                )\n            else:\n                node_attr = attr_method.attribute(\n                    x,\n                    baselines=x_baseline,\n                    n_steps=n_steps\n                )\n                edge_attr_attr = None\n        \n        elif method == 'gradient_shap':\n            # Generate multiple baselines for GradientShap\n            n_samples = 10\n            if baseline == 'zero':\n                baselines = [torch.zeros_like(x) for _ in range(n_samples)]\n                edge_baselines = [torch.zeros_like(edge_attr) for _ in range(n_samples)] if edge_attr is not None else None\n            else:\n                baselines = [torch.randn_like(x) for _ in range(n_samples)]\n                edge_baselines = [torch.randn_like(edge_attr) for _ in range(n_samples)] if edge_attr is not None else None\n            \n            if edge_attr is not None:\n                node_attr, edge_attr_attr = attr_method.attribute(\n                    (x, edge_attr),\n                    baselines=(baselines, edge_baselines),\n                    n_samples=n_samples\n                )\n            else:\n                node_attr = attr_method.attribute(\n                    x,\n                    baselines=baselines,\n                    n_samples=n_samples\n                )\n                edge_attr_attr = None\n        \n        else:\n            # Simple gradient-based methods\n            if edge_attr is not None:\n                node_attr, edge_attr_attr = attr_method.attribute((x, edge_attr))\n            else:\n                node_attr = attr_method.attribute(x)\n                edge_attr_attr = None\n        \n        explanations = {\n            'node_attributions': node_attr.detach(),\n            'edge_attributions': edge_attr_attr.detach() if edge_attr_attr is not None else None,\n            'method': method,\n            'target_class': target_class\n        }\n        \n        return explanations\n    \n    def explain_edges(\n        self,\n        data,\n        target_class: Optional[Union[str, int]] = None,\n        method: str = 'integrated_gradients',\n        top_k: int = 20\n    ) -> Dict[str, Any]:\n        \"\"\"Explain important edges for prediction.\n        \n        Args:\n            data: Input connectome data\n            target_class: Target class or description\n            method: Attribution method\n            top_k: Number of top edges to return\n            \n        Returns:\n            Dictionary with edge explanations\n        \"\"\"\n        # Get basic explanations\n        explanations = self.explain_prediction(data, target_class, method)\n        \n        edge_index = data.edge_index.numpy()\n        edge_attributions = explanations['edge_attributions']\n        \n        if edge_attributions is None:\n            # If no edge attributions, use connectivity strengths\n            edge_attributions = data.edge_attr.abs() if data.edge_attr is not None else torch.ones(edge_index.shape[1])\n        \n        # Compute edge importance scores\n        if edge_attributions.dim() > 1:\n            edge_scores = edge_attributions.abs().mean(dim=1)\n        else:\n            edge_scores = edge_attributions.abs()\n        \n        # Get top-k edges\n        top_k_indices = torch.topk(edge_scores, min(top_k, len(edge_scores)))[1]\n        \n        important_edges = []\n        for idx in top_k_indices:\n            src, tgt = edge_index[:, idx]\n            score = edge_scores[idx].item()\n            \n            important_edges.append({\n                'source': int(src),\n                'target': int(tgt),\n                'importance_score': score,\n                'edge_index': int(idx)\n            })\n        \n        return {\n            'important_edges': important_edges,\n            'edge_scores': edge_scores,\n            'method': method,\n            'target_class': target_class\n        }\n    \n    def explain_nodes(\n        self,\n        data,\n        target_class: Optional[Union[str, int]] = None,\n        method: str = 'integrated_gradients',\n        top_k: int = 10\n    ) -> Dict[str, Any]:\n        \"\"\"Explain important brain regions for prediction.\n        \n        Args:\n            data: Input connectome data\n            target_class: Target class or description\n            method: Attribution method\n            top_k: Number of top regions to return\n            \n        Returns:\n            Dictionary with node explanations\n        \"\"\"\n        # Get explanations\n        explanations = self.explain_prediction(data, target_class, method)\n        \n        node_attributions = explanations['node_attributions']\n        \n        # Compute node importance scores\n        if node_attributions.dim() > 1:\n            node_scores = node_attributions.abs().mean(dim=1)\n        else:\n            node_scores = node_attributions.abs()\n        \n        # Get top-k nodes\n        top_k_indices = torch.topk(node_scores, min(top_k, len(node_scores)))[1]\n        \n        important_regions = []\n        for idx in top_k_indices:\n            score = node_scores[idx].item()\n            \n            important_regions.append({\n                'region_index': int(idx),\n                'importance_score': score,\n                'attribution_vector': node_attributions[idx].tolist()\n            })\n        \n        return {\n            'important_regions': important_regions,\n            'node_scores': node_scores,\n            'method': method,\n            'target_class': target_class\n        }\n    \n    def attention_explanation(\n        self,\n        data,\n        layer_name: Optional[str] = None\n    ) -> Dict[str, torch.Tensor]:\n        \"\"\"Extract attention weights if model has attention mechanism.\"\"\"\n        self.model.eval()\n        \n        with torch.no_grad():\n            data = data.to(self.device)\n            outputs = self.model(data)\n            \n            # Try to extract attention weights\n            attention_weights = None\n            \n            if isinstance(outputs, dict) and 'attention_weights' in outputs:\n                attention_weights = outputs['attention_weights']\n            elif hasattr(self.model, 'get_attention_weights'):\n                attention_weights = self.model.get_attention_weights(data)\n            \n            # Try to get attention from specific layers\n            if attention_weights is None:\n                for module_name, module in self.model.named_modules():\n                    if hasattr(module, 'last_attention') and module.last_attention is not None:\n                        attention_weights = module.last_attention\n                        break\n        \n        return {\n            'attention_weights': attention_weights,\n            'layer_name': layer_name\n        }\n    \n    def counterfactual_analysis(\n        self,\n        data,\n        target_regions: List[int],\n        perturbation_strength: float = 0.1,\n        n_samples: int = 100\n    ) -> Dict[str, Any]:\n        \"\"\"Perform counterfactual analysis.\n        \n        Args:\n            data: Original data\n            target_regions: Regions to perturb\n            perturbation_strength: Strength of perturbation\n            n_samples: Number of counterfactual samples\n            \n        Returns:\n            Counterfactual analysis results\n        \"\"\"\n        self.model.eval()\n        \n        # Get original prediction\n        with torch.no_grad():\n            original_data = data.to(self.device)\n            original_output = self.model(original_data)\n            if isinstance(original_output, dict):\n                original_pred = original_output['predictions']\n            else:\n                original_pred = original_output\n        \n        # Generate counterfactuals\n        counterfactual_preds = []\n        \n        for _ in range(n_samples):\n            # Create perturbed data\n            perturbed_data = original_data.clone()\n            \n            # Add noise to target regions\n            noise = torch.randn_like(perturbed_data.x[target_regions]) * perturbation_strength\n            perturbed_data.x[target_regions] += noise\n            \n            # Get prediction\n            with torch.no_grad():\n                perturbed_output = self.model(perturbed_data)\n                if isinstance(perturbed_output, dict):\n                    perturbed_pred = perturbed_output['predictions']\n                else:\n                    perturbed_pred = perturbed_output\n                \n                counterfactual_preds.append(perturbed_pred.cpu())\n        \n        # Analyze changes\n        counterfactual_preds = torch.stack(counterfactual_preds)\n        pred_changes = counterfactual_preds - original_pred.cpu()\n        \n        return {\n            'original_prediction': original_pred.cpu(),\n            'counterfactual_predictions': counterfactual_preds,\n            'prediction_changes': pred_changes,\n            'mean_change': pred_changes.mean(dim=0),\n            'std_change': pred_changes.std(dim=0),\n            'perturbation_strength': perturbation_strength,\n            'target_regions': target_regions\n        }\n    \n    def visualize_explanation(\n        self,\n        explanations: Dict[str, Any],\n        coordinates: np.ndarray,\n        region_names: Optional[List[str]] = None,\n        brain_template: str = \"MNI152\",\n        save_path: Optional[Path] = None\n    ) -> plt.Figure:\n        \"\"\"Visualize explanations on brain.\n        \n        Args:\n            explanations: Explanation results\n            coordinates: 3D brain coordinates\n            region_names: Names of brain regions\n            brain_template: Brain template name\n            save_path: Path to save visualization\n            \n        Returns:\n            Matplotlib figure\n        \"\"\"\n        if 'important_regions' in explanations:\n            return self._visualize_node_explanations(\n                explanations, coordinates, region_names, save_path\n            )\n        elif 'important_edges' in explanations:\n            return self._visualize_edge_explanations(\n                explanations, coordinates, region_names, save_path\n            )\n        else:\n            raise ValueError(\"Unknown explanation type\")\n    \n    def _visualize_node_explanations(\n        self,\n        explanations: Dict[str, Any],\n        coordinates: np.ndarray,\n        region_names: Optional[List[str]],\n        save_path: Optional[Path]\n    ) -> plt.Figure:\n        \"\"\"Visualize node importance.\"\"\"\n        important_regions = explanations['important_regions']\n        node_scores = explanations['node_scores'].numpy()\n        \n        fig = plt.figure(figsize=(15, 5))\n        \n        # 3D brain plot\n        ax1 = fig.add_subplot(131, projection='3d')\n        \n        # Plot all regions\n        scatter = ax1.scatter(\n            coordinates[:, 0],\n            coordinates[:, 1], \n            coordinates[:, 2],\n            c=node_scores,\n            s=50,\n            cmap='viridis',\n            alpha=0.6\n        )\n        \n        # Highlight important regions\n        important_indices = [r['region_index'] for r in important_regions]\n        ax1.scatter(\n            coordinates[important_indices, 0],\n            coordinates[important_indices, 1],\n            coordinates[important_indices, 2],\n            c='red',\n            s=100,\n            alpha=0.8\n        )\n        \n        ax1.set_xlabel('X')\n        ax1.set_ylabel('Y')\n        ax1.set_zlabel('Z')\n        ax1.set_title('Brain Regions Importance')\n        plt.colorbar(scatter, ax=ax1, label='Importance Score')\n        \n        # Bar plot of top regions\n        ax2 = fig.add_subplot(132)\n        \n        top_scores = [r['importance_score'] for r in important_regions[:10]]\n        top_indices = [r['region_index'] for r in important_regions[:10]]\n        \n        if region_names:\n            labels = [region_names[i] for i in top_indices]\n        else:\n            labels = [f'Region {i}' for i in top_indices]\n        \n        bars = ax2.barh(range(len(top_scores)), top_scores)\n        ax2.set_yticks(range(len(top_scores)))\n        ax2.set_yticklabels(labels)\n        ax2.set_xlabel('Importance Score')\n        ax2.set_title('Top Important Regions')\n        \n        # Color bars by importance\n        colors = plt.cm.viridis([s/max(top_scores) for s in top_scores])\n        for bar, color in zip(bars, colors):\n            bar.set_color(color)\n        \n        # Histogram of all scores\n        ax3 = fig.add_subplot(133)\n        ax3.hist(node_scores, bins=30, alpha=0.7, color='skyblue')\n        ax3.axvline(np.mean(node_scores), color='red', linestyle='--', \n                   label=f'Mean: {np.mean(node_scores):.3f}')\n        ax3.set_xlabel('Importance Score')\n        ax3.set_ylabel('Number of Regions')\n        ax3.set_title('Distribution of Importance Scores')\n        ax3.legend()\n        \n        plt.tight_layout()\n        \n        if save_path:\n            plt.savefig(save_path, dpi=300, bbox_inches='tight')\n        \n        return fig\n    \n    def _visualize_edge_explanations(\n        self,\n        explanations: Dict[str, Any],\n        coordinates: np.ndarray,\n        region_names: Optional[List[str]],\n        save_path: Optional[Path]\n    ) -> plt.Figure:\n        \"\"\"Visualize edge importance.\"\"\"\n        important_edges = explanations['important_edges']\n        \n        fig = plt.figure(figsize=(12, 8))\n        \n        # 3D brain plot with edges\n        ax1 = fig.add_subplot(121, projection='3d')\n        \n        # Plot all regions\n        ax1.scatter(\n            coordinates[:, 0],\n            coordinates[:, 1],\n            coordinates[:, 2],\n            c='lightblue',\n            s=30,\n            alpha=0.6\n        )\n        \n        # Plot important edges\n        max_score = max([e['importance_score'] for e in important_edges])\n        \n        for edge in important_edges[:10]:  # Top 10 edges\n            src, tgt = edge['source'], edge['target']\n            score = edge['importance_score']\n            \n            # Draw edge\n            ax1.plot(\n                [coordinates[src, 0], coordinates[tgt, 0]],\n                [coordinates[src, 1], coordinates[tgt, 1]],\n                [coordinates[src, 2], coordinates[tgt, 2]],\n                'r-',\n                alpha=score/max_score,\n                linewidth=2\n            )\n            \n            # Highlight connected nodes\n            ax1.scatter(\n                [coordinates[src, 0], coordinates[tgt, 0]],\n                [coordinates[src, 1], coordinates[tgt, 1]],\n                [coordinates[src, 2], coordinates[tgt, 2]],\n                c='red',\n                s=60\n            )\n        \n        ax1.set_xlabel('X')\n        ax1.set_ylabel('Y')\n        ax1.set_zlabel('Z')\n        ax1.set_title('Important Brain Connections')\n        \n        # Bar plot of edge importance\n        ax2 = fig.add_subplot(122)\n        \n        top_scores = [e['importance_score'] for e in important_edges[:10]]\n        edge_labels = []\n        \n        for e in important_edges[:10]:\n            src, tgt = e['source'], e['target']\n            if region_names:\n                label = f\"{region_names[src][:10]}\\n-> {region_names[tgt][:10]}\"\n            else:\n                label = f\"R{src}\\n-> R{tgt}\"\n            edge_labels.append(label)\n        \n        bars = ax2.barh(range(len(top_scores)), top_scores)\n        ax2.set_yticks(range(len(top_scores)))\n        ax2.set_yticklabels(edge_labels, fontsize=8)\n        ax2.set_xlabel('Importance Score')\n        ax2.set_title('Top Important Connections')\n        \n        plt.tight_layout()\n        \n        if save_path:\n            plt.savefig(save_path, dpi=300, bbox_inches='tight')\n        \n        return fig\n\n\nclass ConnectomeExplainer(BrainGNNExplainer):\n    \"\"\"Specialized explainer for connectome data with neuroscience-specific methods.\"\"\"\n    \n    def __init__(self, model: BaseConnectomeModel, atlas: str = \"AAL\"):\n        super().__init__(model)\n        self.atlas = atlas\n        \n        # Neuroscience-specific explanation methods\n        self.network_analyzer = NetworkAnalyzer()\n    \n    def network_analysis(\n        self,\n        data,\n        explanations: Dict[str, Any]\n    ) -> Dict[str, Any]:\n        \"\"\"Analyze explanations from network neuroscience perspective.\"\"\"\n        # Build graph from important connections\n        G = nx.Graph()\n        \n        if 'important_edges' in explanations:\n            for edge in explanations['important_edges']:\n                G.add_edge(edge['source'], edge['target'], \n                          weight=edge['importance_score'])\n        \n        # Compute network metrics\n        metrics = {\n            'clustering': nx.average_clustering(G),\n            'path_length': nx.average_shortest_path_length(G) if nx.is_connected(G) else float('inf'),\n            'modularity': self._compute_modularity(G),\n            'small_world': self._compute_small_world_coefficient(G),\n            'rich_club': self._compute_rich_club(G)\n        }\n        \n        return {\n            'network_metrics': metrics,\n            'graph': G,\n            'explanation_network': explanations\n        }\n    \n    def _compute_modularity(self, G: nx.Graph) -> float:\n        \"\"\"Compute modularity of the network.\"\"\"\n        try:\n            communities = nx.community.greedy_modularity_communities(G)\n            return nx.community.modularity(G, communities)\n        except:\n            return 0.0\n    \n    def _compute_small_world_coefficient(self, G: nx.Graph) -> float:\n        \"\"\"Compute small-world coefficient.\"\"\"\n        try:\n            return nx.sigma(G)\n        except:\n            return 0.0\n    \n    def _compute_rich_club(self, G: nx.Graph) -> Dict[int, float]:\n        \"\"\"Compute rich club coefficient.\"\"\"\n        try:\n            return nx.rich_club_coefficient(G)\n        except:\n            return {}\n\n\nclass NetworkAnalyzer:\n    \"\"\"Network analysis utilities for brain explanations.\"\"\"\n    \n    def analyze_connectivity_patterns(\n        self,\n        connectivity_matrix: np.ndarray,\n        importance_scores: np.ndarray\n    ) -> Dict[str, Any]:\n        \"\"\"Analyze connectivity patterns with importance weighting.\"\"\"\n        \n        # Weight connectivity by importance\n        weighted_connectivity = connectivity_matrix * importance_scores.reshape(-1, 1)\n        \n        # Create graph\n        G = nx.from_numpy_array(weighted_connectivity)\n        \n        # Compute network metrics\n        metrics = {\n            'degree_centrality': nx.degree_centrality(G),\n            'betweenness_centrality': nx.betweenness_centrality(G),\n            'eigenvector_centrality': nx.eigenvector_centrality(G, max_iter=1000),\n            'pagerank': nx.pagerank(G),\n            'clustering': nx.clustering(G)\n        }\n        \n        return {\n            'network_metrics': metrics,\n            'weighted_connectivity': weighted_connectivity,\n            'graph': G\n        }
+        self,
+        model: BaseConnectomeModel,
+        device: torch.device = None
+    ):
+        self.model = model
+        self.device = device or torch.device('cpu')
+        self.model.to(self.device)
+        
+        # Initialize attribution methods
+        self.attribution_methods = {
+            'saliency': Saliency(self.model),
+            'integrated_gradients': IntegratedGradients(self.model),
+            'gradient_shap': GradientShap(self.model),
+            'input_x_gradient': InputXGradient(self.model),
+            'guided_backprop': GuidedBackprop(self.model)
+        }
+        
+        # Layer attribution methods (for intermediate layers)
+        self.layer_methods = {}
+        
+        # Store explanations
+        self.explanations = {}
+    
+    def explain_prediction(
+        self,
+        data,
+        target_class: Optional[int] = None,
+        method: str = 'integrated_gradients',
+        baseline: str = 'zero',
+        n_steps: int = 50
+    ) -> Dict[str, torch.Tensor]:
+        """Generate explanation for a single prediction.
+        
+        Args:
+            data: Input data (PyTorch Geometric Data object)
+            target_class: Target class for explanation (None for regression)
+            method: Attribution method to use
+            baseline: Baseline for integrated gradients ('zero', 'random', 'mean')
+            n_steps: Number of steps for integrated gradients
+            
+        Returns:
+            Dictionary containing node and edge attributions
+        """
+        self.model.eval()
+        
+        # Prepare input
+        x = data.x.to(self.device).requires_grad_(True)
+        edge_index = data.edge_index.to(self.device)
+        edge_attr = data.edge_attr.to(self.device).requires_grad_(True) if data.edge_attr is not None else None
+        
+        # Create baseline
+        if method in ['integrated_gradients', 'gradient_shap']:
+            if baseline == 'zero':
+                x_baseline = torch.zeros_like(x)
+                edge_baseline = torch.zeros_like(edge_attr) if edge_attr is not None else None
+            elif baseline == 'random':
+                x_baseline = torch.randn_like(x)
+                edge_baseline = torch.randn_like(edge_attr) if edge_attr is not None else None
+            elif baseline == 'mean':
+                x_baseline = torch.mean(x, dim=0, keepdim=True).expand_as(x)
+                edge_baseline = torch.mean(edge_attr, dim=0, keepdim=True).expand_as(edge_attr) if edge_attr is not None else None
+        else:
+            x_baseline = edge_baseline = None
+        
+        # Forward function for attribution
+        def forward_func(*inputs):
+            x_input, edge_attr_input = inputs[0], inputs[1] if len(inputs) > 1 else None
+            
+            # Create temporary data object
+            temp_data = type(data)()
+            temp_data.x = x_input
+            temp_data.edge_index = edge_index
+            temp_data.edge_attr = edge_attr_input
+            
+            # Get prediction
+            outputs = self.model(temp_data)
+            
+            if isinstance(outputs, dict):
+                predictions = outputs['predictions']
+            else:
+                predictions = outputs
+            
+            if target_class is not None:
+                return predictions[:, target_class] if predictions.dim() > 1 else predictions
+            else:
+                return predictions.squeeze() if predictions.dim() > 1 else predictions
+        
+        # Compute attributions
+        attr_method = self.attribution_methods[method]
+        
+        if method == 'integrated_gradients':
+            if edge_attr is not None:
+                node_attr, edge_attr_attr = attr_method.attribute(
+                    (x, edge_attr),
+                    baselines=(x_baseline, edge_baseline),
+                    n_steps=n_steps,
+                    return_convergence_delta=False
+                )
+            else:
+                node_attr = attr_method.attribute(
+                    x,
+                    baselines=x_baseline,
+                    n_steps=n_steps
+                )
+                edge_attr_attr = None
+        
+        elif method == 'gradient_shap':
+            # Generate multiple baselines for GradientShap
+            n_samples = 10
+            if baseline == 'zero':
+                baselines = [torch.zeros_like(x) for _ in range(n_samples)]
+                edge_baselines = [torch.zeros_like(edge_attr) for _ in range(n_samples)] if edge_attr is not None else None
+            else:
+                baselines = [torch.randn_like(x) for _ in range(n_samples)]
+                edge_baselines = [torch.randn_like(edge_attr) for _ in range(n_samples)] if edge_attr is not None else None
+            
+            if edge_attr is not None:
+                node_attr, edge_attr_attr = attr_method.attribute(
+                    (x, edge_attr),
+                    baselines=(baselines, edge_baselines),
+                    n_samples=n_samples
+                )
+            else:
+                node_attr = attr_method.attribute(
+                    x,
+                    baselines=baselines,
+                    n_samples=n_samples
+                )
+                edge_attr_attr = None
+        
+        else:
+            # Simple gradient-based methods
+            if edge_attr is not None:
+                node_attr, edge_attr_attr = attr_method.attribute((x, edge_attr))
+            else:
+                node_attr = attr_method.attribute(x)
+                edge_attr_attr = None
+        
+        explanations = {
+            'node_attributions': node_attr.detach(),
+            'edge_attributions': edge_attr_attr.detach() if edge_attr_attr is not None else None,
+            'method': method,
+            'target_class': target_class
+        }
+        
+        return explanations
+    
+    def explain_edges(
+        self,
+        data,
+        target_class: Optional[Union[str, int]] = None,
+        method: str = 'integrated_gradients',
+        top_k: int = 20
+    ) -> Dict[str, Any]:
+        """Explain important edges for prediction.
+        
+        Args:
+            data: Input connectome data
+            target_class: Target class or description
+            method: Attribution method
+            top_k: Number of top edges to return
+            
+        Returns:
+            Dictionary with edge explanations
+        """
+        # Get basic explanations
+        explanations = self.explain_prediction(data, target_class, method)
+        
+        edge_index = data.edge_index.numpy()
+        edge_attributions = explanations['edge_attributions']
+        
+        if edge_attributions is None:
+            # If no edge attributions, use connectivity strengths
+            edge_attributions = data.edge_attr.abs() if data.edge_attr is not None else torch.ones(edge_index.shape[1])
+        
+        # Compute edge importance scores
+        if edge_attributions.dim() > 1:
+            edge_scores = edge_attributions.abs().mean(dim=1)
+        else:
+            edge_scores = edge_attributions.abs()
+        
+        # Get top-k edges
+        top_k_indices = torch.topk(edge_scores, min(top_k, len(edge_scores)))[1]
+        
+        important_edges = []
+        for idx in top_k_indices:
+            src, tgt = edge_index[:, idx]
+            score = edge_scores[idx].item()
+            
+            important_edges.append({
+                'source': int(src),
+                'target': int(tgt),
+                'importance_score': score,
+                'edge_index': int(idx)
+            })
+        
+        return {
+            'important_edges': important_edges,
+            'edge_scores': edge_scores,
+            'method': method,
+            'target_class': target_class
+        }
+    
+    def explain_nodes(
+        self,
+        data,
+        target_class: Optional[Union[str, int]] = None,
+        method: str = 'integrated_gradients',
+        top_k: int = 10
+    ) -> Dict[str, Any]:
+        """Explain important brain regions for prediction.
+        
+        Args:
+            data: Input connectome data
+            target_class: Target class or description
+            method: Attribution method
+            top_k: Number of top regions to return
+            
+        Returns:
+            Dictionary with node explanations
+        """
+        # Get explanations
+        explanations = self.explain_prediction(data, target_class, method)
+        
+        node_attributions = explanations['node_attributions']
+        
+        # Compute node importance scores
+        if node_attributions.dim() > 1:
+            node_scores = node_attributions.abs().mean(dim=1)
+        else:
+            node_scores = node_attributions.abs()
+        
+        # Get top-k nodes
+        top_k_indices = torch.topk(node_scores, min(top_k, len(node_scores)))[1]
+        
+        important_regions = []
+        for idx in top_k_indices:
+            score = node_scores[idx].item()
+            
+            important_regions.append({
+                'region_index': int(idx),
+                'importance_score': score,
+                'attribution_vector': node_attributions[idx].tolist()
+            })
+        
+        return {
+            'important_regions': important_regions,
+            'node_scores': node_scores,
+            'method': method,
+            'target_class': target_class
+        }
+    
+    def attention_explanation(
+        self,
+        data,
+        layer_name: Optional[str] = None
+    ) -> Dict[str, torch.Tensor]:
+        """Extract attention weights if model has attention mechanism."""
+        self.model.eval()
+        
+        with torch.no_grad():
+            data = data.to(self.device)
+            outputs = self.model(data)
+            
+            # Try to extract attention weights
+            attention_weights = None
+            
+            if isinstance(outputs, dict) and 'attention_weights' in outputs:
+                attention_weights = outputs['attention_weights']
+            elif hasattr(self.model, 'get_attention_weights'):
+                attention_weights = self.model.get_attention_weights(data)
+            
+            # Try to get attention from specific layers
+            if attention_weights is None:
+                for module_name, module in self.model.named_modules():
+                    if hasattr(module, 'last_attention') and module.last_attention is not None:
+                        attention_weights = module.last_attention
+                        break
+        
+        return {
+            'attention_weights': attention_weights,
+            'layer_name': layer_name
+        }
+    
+    def counterfactual_analysis(
+        self,
+        data,
+        target_regions: List[int],
+        perturbation_strength: float = 0.1,
+        n_samples: int = 100
+    ) -> Dict[str, Any]:
+        """Perform counterfactual analysis.
+        
+        Args:
+            data: Original data
+            target_regions: Regions to perturb
+            perturbation_strength: Strength of perturbation
+            n_samples: Number of counterfactual samples
+            
+        Returns:
+            Counterfactual analysis results
+        """
+        self.model.eval()
+        
+        # Get original prediction
+        with torch.no_grad():
+            original_data = data.to(self.device)
+            original_output = self.model(original_data)
+            if isinstance(original_output, dict):
+                original_pred = original_output['predictions']
+            else:
+                original_pred = original_output
+        
+        # Generate counterfactuals
+        counterfactual_preds = []
+        
+        for _ in range(n_samples):
+            # Create perturbed data
+            perturbed_data = original_data.clone()
+            
+            # Add noise to target regions
+            noise = torch.randn_like(perturbed_data.x[target_regions]) * perturbation_strength
+            perturbed_data.x[target_regions] += noise
+            
+            # Get prediction
+            with torch.no_grad():
+                perturbed_output = self.model(perturbed_data)
+                if isinstance(perturbed_output, dict):
+                    perturbed_pred = perturbed_output['predictions']
+                else:
+                    perturbed_pred = perturbed_output
+                
+                counterfactual_preds.append(perturbed_pred.cpu())
+        
+        # Analyze changes
+        counterfactual_preds = torch.stack(counterfactual_preds)
+        pred_changes = counterfactual_preds - original_pred.cpu()
+        
+        return {
+            'original_prediction': original_pred.cpu(),
+            'counterfactual_predictions': counterfactual_preds,
+            'prediction_changes': pred_changes,
+            'mean_change': pred_changes.mean(dim=0),
+            'std_change': pred_changes.std(dim=0),
+            'perturbation_strength': perturbation_strength,
+            'target_regions': target_regions
+        }
+    
+    def visualize_explanation(
+        self,
+        explanations: Dict[str, Any],
+        coordinates: np.ndarray,
+        region_names: Optional[List[str]] = None,
+        brain_template: str = "MNI152",
+        save_path: Optional[Path] = None
+    ) -> plt.Figure:
+        """Visualize explanations on brain.
+        
+        Args:
+            explanations: Explanation results
+            coordinates: 3D brain coordinates
+            region_names: Names of brain regions
+            brain_template: Brain template name
+            save_path: Path to save visualization
+            
+        Returns:
+            Matplotlib figure
+        """
+        if 'important_regions' in explanations:
+            return self._visualize_node_explanations(
+                explanations, coordinates, region_names, save_path
+            )
+        elif 'important_edges' in explanations:
+            return self._visualize_edge_explanations(
+                explanations, coordinates, region_names, save_path
+            )
+        else:
+            raise ValueError("Unknown explanation type")
+    
+    def _visualize_node_explanations(
+        self,
+        explanations: Dict[str, Any],
+        coordinates: np.ndarray,
+        region_names: Optional[List[str]],
+        save_path: Optional[Path]
+    ) -> plt.Figure:
+        """Visualize node importance."""
+        important_regions = explanations['important_regions']
+        node_scores = explanations['node_scores'].numpy()
+        
+        fig = plt.figure(figsize=(15, 5))
+        
+        # 3D brain plot
+        ax1 = fig.add_subplot(131, projection='3d')
+        
+        # Plot all regions
+        scatter = ax1.scatter(
+            coordinates[:, 0],
+            coordinates[:, 1], 
+            coordinates[:, 2],
+            c=node_scores,
+            s=50,
+            cmap='viridis',
+            alpha=0.6
+        )
+        
+        # Highlight important regions
+        important_indices = [r['region_index'] for r in important_regions]
+        ax1.scatter(
+            coordinates[important_indices, 0],
+            coordinates[important_indices, 1],
+            coordinates[important_indices, 2],
+            c='red',
+            s=100,
+            alpha=0.8
+        )
+        
+        ax1.set_xlabel('X')
+        ax1.set_ylabel('Y')
+        ax1.set_zlabel('Z')
+        ax1.set_title('Brain Regions Importance')
+        plt.colorbar(scatter, ax=ax1, label='Importance Score')
+        
+        # Bar plot of top regions
+        ax2 = fig.add_subplot(132)
+        
+        top_scores = [r['importance_score'] for r in important_regions[:10]]
+        top_indices = [r['region_index'] for r in important_regions[:10]]
+        
+        if region_names:
+            labels = [region_names[i] for i in top_indices]
+        else:
+            labels = [f'Region {i}' for i in top_indices]
+        
+        bars = ax2.barh(range(len(top_scores)), top_scores)
+        ax2.set_yticks(range(len(top_scores)))
+        ax2.set_yticklabels(labels)
+        ax2.set_xlabel('Importance Score')
+        ax2.set_title('Top Important Regions')
+        
+        # Color bars by importance
+        colors = plt.cm.viridis([s/max(top_scores) for s in top_scores])
+        for bar, color in zip(bars, colors):
+            bar.set_color(color)
+        
+        # Histogram of all scores
+        ax3 = fig.add_subplot(133)
+        ax3.hist(node_scores, bins=30, alpha=0.7, color='skyblue')
+        ax3.axvline(np.mean(node_scores), color='red', linestyle='--', 
+                   label=f'Mean: {np.mean(node_scores):.3f}')
+        ax3.set_xlabel('Importance Score')
+        ax3.set_ylabel('Number of Regions')
+        ax3.set_title('Distribution of Importance Scores')
+        ax3.legend()
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        
+        return fig
+    
+    def _visualize_edge_explanations(
+        self,
+        explanations: Dict[str, Any],
+        coordinates: np.ndarray,
+        region_names: Optional[List[str]],
+        save_path: Optional[Path]
+    ) -> plt.Figure:
+        """Visualize edge importance."""
+        important_edges = explanations['important_edges']
+        
+        fig = plt.figure(figsize=(12, 8))
+        
+        # 3D brain plot with edges
+        ax1 = fig.add_subplot(121, projection='3d')
+        
+        # Plot all regions
+        ax1.scatter(
+            coordinates[:, 0],
+            coordinates[:, 1],
+            coordinates[:, 2],
+            c='lightblue',
+            s=30,
+            alpha=0.6
+        )
+        
+        # Plot important edges
+        max_score = max([e['importance_score'] for e in important_edges])
+        
+        for edge in important_edges[:10]:  # Top 10 edges
+            src, tgt = edge['source'], edge['target']
+            score = edge['importance_score']
+            
+            # Draw edge
+            ax1.plot(
+                [coordinates[src, 0], coordinates[tgt, 0]],
+                [coordinates[src, 1], coordinates[tgt, 1]],
+                [coordinates[src, 2], coordinates[tgt, 2]],
+                'r-',
+                alpha=score/max_score,
+                linewidth=2
+            )
+            
+            # Highlight connected nodes
+            ax1.scatter(
+                [coordinates[src, 0], coordinates[tgt, 0]],
+                [coordinates[src, 1], coordinates[tgt, 1]],
+                [coordinates[src, 2], coordinates[tgt, 2]],
+                c='red',
+                s=60
+            )
+        
+        ax1.set_xlabel('X')
+        ax1.set_ylabel('Y')
+        ax1.set_zlabel('Z')
+        ax1.set_title('Important Brain Connections')
+        
+        # Bar plot of edge importance
+        ax2 = fig.add_subplot(122)
+        
+        top_scores = [e['importance_score'] for e in important_edges[:10]]
+        edge_labels = []
+        
+        for e in important_edges[:10]:
+            src, tgt = e['source'], e['target']
+            if region_names:
+                label = f"{region_names[src][:10]}\n-> {region_names[tgt][:10]}"
+            else:
+                label = f"R{src}\n-> R{tgt}"
+            edge_labels.append(label)
+        
+        bars = ax2.barh(range(len(top_scores)), top_scores)
+        ax2.set_yticks(range(len(top_scores)))
+        ax2.set_yticklabels(edge_labels, fontsize=8)
+        ax2.set_xlabel('Importance Score')
+        ax2.set_title('Top Important Connections')
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        
+        return fig
+
+
+class ConnectomeExplainer(BrainGNNExplainer):
+    """Specialized explainer for connectome data with neuroscience-specific methods."""
+    
+    def __init__(self, model: BaseConnectomeModel, atlas: str = "AAL"):
+        super().__init__(model)
+        self.atlas = atlas
+        
+        # Neuroscience-specific explanation methods
+        self.network_analyzer = NetworkAnalyzer()
+    
+    def network_analysis(
+        self,
+        data,
+        explanations: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Analyze explanations from network neuroscience perspective."""
+        # Build graph from important connections
+        G = nx.Graph()
+        
+        if 'important_edges' in explanations:
+            for edge in explanations['important_edges']:
+                G.add_edge(edge['source'], edge['target'], 
+                          weight=edge['importance_score'])
+        
+        # Compute network metrics
+        metrics = {
+            'clustering': nx.average_clustering(G),
+            'path_length': nx.average_shortest_path_length(G) if nx.is_connected(G) else float('inf'),
+            'modularity': self._compute_modularity(G),
+            'small_world': self._compute_small_world_coefficient(G),
+            'rich_club': self._compute_rich_club(G)
+        }
+        
+        return {
+            'network_metrics': metrics,
+            'graph': G,
+            'explanation_network': explanations
+        }
+    
+    def _compute_modularity(self, G: nx.Graph) -> float:
+        """Compute modularity of the network."""
+        try:
+            communities = nx.community.greedy_modularity_communities(G)
+            return nx.community.modularity(G, communities)
+        except:
+            return 0.0
+    
+    def _compute_small_world_coefficient(self, G: nx.Graph) -> float:
+        """Compute small-world coefficient."""
+        try:
+            return nx.sigma(G)
+        except:
+            return 0.0
+    
+    def _compute_rich_club(self, G: nx.Graph) -> Dict[int, float]:
+        """Compute rich club coefficient."""
+        try:
+            return nx.rich_club_coefficient(G)
+        except:
+            return {}
+
+
+class NetworkAnalyzer:
+    """Network analysis utilities for brain explanations."""
+    
+    def analyze_connectivity_patterns(
+        self,
+        connectivity_matrix: np.ndarray,
+        importance_scores: np.ndarray
+    ) -> Dict[str, Any]:
+        """Analyze connectivity patterns with importance weighting."""
+        
+        # Weight connectivity by importance
+        weighted_connectivity = connectivity_matrix * importance_scores.reshape(-1, 1)
+        
+        # Create graph
+        G = nx.from_numpy_array(weighted_connectivity)
+        
+        # Compute network metrics
+        metrics = {
+            'degree_centrality': nx.degree_centrality(G),
+            'betweenness_centrality': nx.betweenness_centrality(G),
+            'eigenvector_centrality': nx.eigenvector_centrality(G, max_iter=1000),
+            'pagerank': nx.pagerank(G),
+            'clustering': nx.clustering(G)
+        }
+        
+        return {
+            'network_metrics': metrics,
+            'weighted_connectivity': weighted_connectivity,
+            'graph': G
+        }

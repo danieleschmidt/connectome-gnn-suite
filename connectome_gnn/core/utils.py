@@ -265,6 +265,11 @@ def ensure_reproducibility(seed: int = 42):
     os.environ['PYTHONHASHSEED'] = str(seed)
 
 
+def set_random_seed(seed: int = 42):
+    """Alias for ensure_reproducibility for compatibility."""
+    ensure_reproducibility(seed)
+
+
 def check_system_requirements() -> Dict[str, bool]:
     """Check if system meets minimum requirements."""
     requirements = {

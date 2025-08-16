@@ -1,0 +1,186 @@
+{
+  "timestamp": "2025-08-16T19:09:41.900015",
+  "overall_score": 0.6421775898520085,
+  "execution_time": 1.5144846439361572,
+  "gates": {
+    "syntax_validation": {
+      "gate_name": "syntax_validation",
+      "status": "passed",
+      "score": 1.0,
+      "details": {
+        "total_files": 81,
+        "valid_files": 81,
+        "syntax_errors": []
+      },
+      "execution_time": 0.2886166572570801,
+      "timestamp": "2025-08-16 19:09:40.673991",
+      "blockers": [],
+      "warnings": []
+    },
+    "import_validation": {
+      "gate_name": "import_validation",
+      "status": "failed",
+      "score": 0.3333333333333333,
+      "details": {
+        "total_files": 81,
+        "valid_imports": 27,
+        "import_errors": [
+          "/root/repo/test_comprehensive.py: No module named 'torch'",
+          "/root/repo/connectome_gnn/__init__.py: No module named 'temp_module'",
+          "/root/repo/connectome_gnn/advanced_training.py: No module named 'wandb'",
+          "/root/repo/connectome_gnn/caching.py: No module named 'torch'",
+          "/root/repo/connectome_gnn/cli.py: No module named 'torch'",
+          "/root/repo/connectome_gnn/optimization.py: No module named 'torch'",
+          "/root/repo/connectome_gnn/security.py: No module named 'torch'",
+          "/root/repo/connectome_gnn/training.py: No module named 'torch'",
+          "/root/repo/connectome_gnn/utils.py: No module named 'torch'",
+          "/root/repo/connectome_gnn/validation.py: No module named 'torch'"
+        ]
+      },
+      "execution_time": 1.2006535530090332,
+      "timestamp": "2025-08-16 19:09:41.874694",
+      "blockers": [],
+      "warnings": [
+        "/root/repo/test_comprehensive.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/__init__.py: No module named 'temp_module'",
+        "/root/repo/connectome_gnn/advanced_training.py: No module named 'wandb'",
+        "/root/repo/connectome_gnn/caching.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/cli.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/optimization.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/security.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/training.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/utils.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/validation.py: No module named 'torch'",
+        "/root/repo/tests/conftest.py: No module named 'torch'",
+        "/root/repo/tests/test_data.py: No module named 'torch'",
+        "/root/repo/tests/test_imports.py: No module named 'torch'",
+        "/root/repo/tests/test_models.py: No module named 'torch'",
+        "/root/repo/tests/test_security.py: No module named 'torch'",
+        "/root/repo/tests/test_tasks.py: No module named 'torch'",
+        "/root/repo/tests/test_training.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/benchmarks/__init__.py: No module named 'temp_module'",
+        "/root/repo/connectome_gnn/benchmarks/subject_benchmark.py: No module named 'pandas'",
+        "/root/repo/connectome_gnn/core/__init__.py: No module named 'temp_module'",
+        "/root/repo/connectome_gnn/deployment/config_management.py: attempted relative import with no known parent package",
+        "/root/repo/connectome_gnn/optimization/distributed.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/optimization/inference.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/optimization/memory_efficient.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/research/__init__.py: No module named 'temp_module'",
+        "/root/repo/connectome_gnn/research/advanced_visualization.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/research/benchmarking.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/research/experimental.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/research/interpretability.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/research/novel_architectures.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/research/publication.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/research/statistical_validation.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/robust/validation.py: attempted relative import with no known parent package",
+        "/root/repo/connectome_gnn/scale/caching.py: attempted relative import with no known parent package",
+        "/root/repo/connectome_gnn/scale/memory_optimization.py: attempted relative import with no known parent package",
+        "/root/repo/connectome_gnn/scale/performance_monitoring.py: attempted relative import with no known parent package",
+        "/root/repo/connectome_gnn/tasks/__init__.py: No module named 'temp_module'",
+        "/root/repo/connectome_gnn/tasks/base.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/tasks/edge_level.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/tasks/graph_level.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/tasks/node_level.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/testing/quality_gates.py: attempted relative import with no known parent package",
+        "/root/repo/connectome_gnn/testing/test_framework.py: attempted relative import with no known parent package",
+        "/root/repo/connectome_gnn/training/__init__.py: No module named 'temp_module'",
+        "/root/repo/connectome_gnn/training/trainer.py: No module named 'torch'",
+        "/root/repo/connectome_gnn/visualization/__init__.py: No module named 'temp_module'",
+        "/root/repo/connectome_gnn/visualization/brain_plots.py: No module named 'plotly'",
+        "/root/repo/connectome_gnn/visualization/explainer.py: No module named 'torch'",
+        "/root/repo/tests/benchmarks/test_performance.py: No module named 'torch'",
+        "/root/repo/tests/e2e/test_complete_workflow.py: No module named 'torch'",
+        "/root/repo/tests/fixtures/data_generators.py: No module named 'torch'",
+        "/root/repo/tests/integration/test_training_pipeline.py: No module named 'torch'",
+        "/root/repo/tests/unit/test_data_loading.py: No module named 'torch'",
+        "/root/repo/tests/unit/test_models.py: No module named 'torch'"
+      ]
+    },
+    "security_scan": {
+      "gate_name": "security_scan",
+      "status": "passed",
+      "score": 1.0,
+      "details": {
+        "total_checks": 0,
+        "passed_checks": 0,
+        "vulnerabilities_found": 0,
+        "security_score": 0.8
+      },
+      "execution_time": 2.2411346435546875e-05,
+      "timestamp": "2025-08-16 19:09:41.874757",
+      "blockers": [],
+      "warnings": []
+    },
+    "test_execution": {
+      "gate_name": "test_execution",
+      "status": "failed",
+      "score": 0.0,
+      "details": {
+        "error": "[Errno 2] No such file or directory: 'python'"
+      },
+      "execution_time": 0.0012669563293457031,
+      "timestamp": "2025-08-16 19:09:41.876036",
+      "blockers": [
+        "Test execution failed: [Errno 2] No such file or directory: 'python'"
+      ],
+      "warnings": []
+    },
+    "performance_check": {
+      "gate_name": "performance_check",
+      "status": "failed",
+      "score": 0.5,
+      "details": {
+        "error": "'PerformanceMonitor' object has no attribute 'get_system_metrics'"
+      },
+      "execution_time": 1.6450881958007812e-05,
+      "timestamp": "2025-08-16 19:09:41.876090",
+      "blockers": [],
+      "warnings": [
+        "Performance check failed: 'PerformanceMonitor' object has no attribute 'get_system_metrics'"
+      ]
+    },
+    "documentation_check": {
+      "gate_name": "documentation_check",
+      "status": "passed",
+      "score": 0.8040873854827343,
+      "details": {
+        "total_functions": 1419,
+        "documented_functions": 1141,
+        "documentation_coverage": 80.40873854827343
+      },
+      "execution_time": 0.021995067596435547,
+      "timestamp": "2025-08-16 19:09:41.898096",
+      "blockers": [],
+      "warnings": []
+    },
+    "code_quality": {
+      "gate_name": "code_quality",
+      "status": "failed",
+      "score": 0.7,
+      "details": {
+        "error": "[Errno 2] No such file or directory: 'python'"
+      },
+      "execution_time": 0.0008959770202636719,
+      "timestamp": "2025-08-16 19:09:41.899030",
+      "blockers": [],
+      "warnings": [
+        "Code quality check failed: [Errno 2] No such file or directory: 'python'"
+      ]
+    },
+    "dependency_audit": {
+      "gate_name": "dependency_audit",
+      "status": "failed",
+      "score": 0.8,
+      "details": {
+        "error": "[Errno 2] No such file or directory: 'python'"
+      },
+      "execution_time": 0.0007419586181640625,
+      "timestamp": "2025-08-16 19:09:41.899812",
+      "blockers": [],
+      "warnings": [
+        "Dependency audit failed: [Errno 2] No such file or directory: 'python'"
+      ]
+    }
+  }
+}

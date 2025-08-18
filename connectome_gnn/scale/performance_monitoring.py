@@ -48,6 +48,357 @@ class MetricsCollector:
         self.monitor_thread = None
         self.monitor_interval = 1.0  # seconds
         
+    def collect_metrics(self) -> PerformanceMetrics:
+        """Collect current performance metrics."""
+        metrics = PerformanceMetrics()
+        
+        # CPU metrics
+        metrics.cpu_percent = self.process.cpu_percent()
+        
+        # Memory metrics
+        memory_info = self.process.memory_info()
+        metrics.memory_usage_mb = memory_info.rss / 1024 / 1024
+        
+        # GPU metrics
+        if self.torch and self.torch.cuda.is_available():
+            try:
+                import nvidia_ml_py3 as nvml
+                nvml.nvmlInit()
+                handle = nvml.nvmlDeviceGetHandleByIndex(0)
+                gpu_info = nvml.nvmlDeviceGetUtilizationRates(handle)
+                memory_info = nvml.nvmlDeviceGetMemoryInfo(handle)
+                
+                metrics.gpu_utilization = gpu_info.gpu
+                metrics.gpu_memory_mb = memory_info.used / 1024 / 1024
+            except ImportError:
+                # Fallback to PyTorch metrics
+                metrics.gpu_memory_mb = self.torch.cuda.memory_allocated() / 1024 / 1024
+        
+        return metrics
+    
+    def start_monitoring(self, interval: float = 1.0):
+        """Start background performance monitoring."""
+        if self.monitoring_active:
+            return
+        
+        self.monitor_interval = interval
+        self.monitoring_active = True
+        self.monitor_thread = threading.Thread(target=self._monitoring_loop, daemon=True)
+        self.monitor_thread.start()
+    
+    def stop_monitoring(self):
+        """Stop background performance monitoring."""
+        self.monitoring_active = False
+        if self.monitor_thread:
+            self.monitor_thread.join()
+    
+    def _monitoring_loop(self):
+        """Background monitoring loop."""
+        while self.monitoring_active:
+            try:
+                metrics = self.collect_metrics()
+                timestamp = time.time()
+                
+                # Store metrics
+                self.metrics_history['timestamp'].append(timestamp)
+                self.metrics_history['cpu_percent'].append(metrics.cpu_percent)
+                self.metrics_history['memory_usage_mb'].append(metrics.memory_usage_mb)
+                self.metrics_history['gpu_utilization'].append(metrics.gpu_utilization)
+                self.metrics_history['gpu_memory_mb'].append(metrics.gpu_memory_mb)
+                
+                time.sleep(self.monitor_interval)
+                
+            except Exception as e:
+                self.logger.error(f"Error in monitoring loop: {e}")
+                time.sleep(1.0)
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get performance statistics."""
+        stats = {}
+        
+        for metric_name, values in self.metrics_history.items():
+            if metric_name == 'timestamp' or not values:
+                continue
+            
+            stats[metric_name] = {
+                'mean': statistics.mean(values),
+                'median': statistics.median(values),
+                'min': min(values),
+                'max': max(values),
+                'std': statistics.stdev(values) if len(values) > 1 else 0.0
+            }
+        
+        return stats
+    
+    @contextmanager
+    def measure_latency(self, operation_name: str = "operation"):
+        """Context manager to measure operation latency."""
+        start_time = time.time()
+        try:
+            yield
+        finally:
+            latency = time.time() - start_time
+            self.latency_buffer.append(latency)
+            self.logger.debug(f"{operation_name} latency: {latency:.4f}s")
+    
+    def get_latency_percentiles(self) -> Dict[str, float]:
+        """Get latency percentiles."""
+        if not self.latency_buffer:
+            return {}
+        
+        sorted_latencies = sorted(self.latency_buffer)
+        n = len(sorted_latencies)
+        
+        return {
+            'p50': sorted_latencies[int(0.5 * n)],
+            'p90': sorted_latencies[int(0.9 * n)],
+            'p95': sorted_latencies[int(0.95 * n)],
+            'p99': sorted_latencies[int(0.99 * n)]
+        }
+
+
+class PerformanceBenchmark:
+    """Benchmarking suite for connectome GNN operations."""
+    
+    def __init__(self, logger: Optional[logging.Logger] = None):
+        self.logger = logger or get_logger("performance_benchmark")
+        self.torch = safe_import('torch')
+        self.collector = MetricsCollector(logger)
+        self.results = {}
+        
+    def benchmark_model_inference(self, model, data_batch, num_runs: int = 100) -> Dict[str, float]:
+        """Benchmark model inference performance."""
+        if not self.torch:
+            raise ImportError("PyTorch required for benchmarking")
+        
+        model.eval()
+        latencies = []
+        
+        # Warmup runs
+        for _ in range(10):
+            with self.torch.no_grad():
+                _ = model(data_batch)
+        
+        # Benchmark runs
+        for i in range(num_runs):
+            with self.collector.measure_latency(f"inference_run_{i}"):
+                with self.torch.no_grad():
+                    _ = model(data_batch)
+        
+        # Calculate metrics
+        percentiles = self.collector.get_latency_percentiles()
+        
+        return {
+            'avg_latency_ms': statistics.mean(self.collector.latency_buffer) * 1000,
+            'p50_latency_ms': percentiles.get('p50', 0) * 1000,
+            'p95_latency_ms': percentiles.get('p95', 0) * 1000,
+            'p99_latency_ms': percentiles.get('p99', 0) * 1000,
+            'throughput_samples_per_sec': 1.0 / statistics.mean(self.collector.latency_buffer)
+        }
+    
+    def benchmark_data_loading(self, dataloader, num_batches: int = 50) -> Dict[str, float]:
+        """Benchmark data loading performance."""
+        load_times = []
+        
+        for i, batch in enumerate(dataloader):
+            if i >= num_batches:
+                break
+            
+            start_time = time.time()
+            # Simulate data transfer to GPU
+            if self.torch and self.torch.cuda.is_available():
+                if hasattr(batch, 'to'):
+                    batch = batch.to('cuda')
+            load_time = time.time() - start_time
+            load_times.append(load_time)
+        
+        return {
+            'avg_load_time_ms': statistics.mean(load_times) * 1000,
+            'min_load_time_ms': min(load_times) * 1000,
+            'max_load_time_ms': max(load_times) * 1000,
+            'data_loading_throughput': len(load_times) / sum(load_times)
+        }
+    
+    def benchmark_memory_usage(self, model, data_batch) -> Dict[str, float]:
+        """Benchmark memory usage during forward pass."""
+        if not self.torch or not self.torch.cuda.is_available():
+            return {}
+        
+        # Clear cache
+        self.torch.cuda.empty_cache()
+        initial_memory = self.torch.cuda.memory_allocated()
+        
+        # Forward pass
+        model.eval()
+        with self.torch.no_grad():
+            output = model(data_batch)
+        
+        peak_memory = self.torch.cuda.max_memory_allocated()
+        final_memory = self.torch.cuda.memory_allocated()
+        
+        return {
+            'initial_memory_mb': initial_memory / 1024 / 1024,
+            'peak_memory_mb': peak_memory / 1024 / 1024,
+            'final_memory_mb': final_memory / 1024 / 1024,
+            'memory_increase_mb': (final_memory - initial_memory) / 1024 / 1024
+        }
+    
+    def run_comprehensive_benchmark(self, model, dataloader, save_results: bool = True) -> Dict[str, Any]:
+        """Run comprehensive performance benchmark."""
+        results = {}
+        
+        # Get first batch for testing
+        data_batch = next(iter(dataloader))
+        if self.torch and self.torch.cuda.is_available():
+            data_batch = data_batch.to('cuda')
+            model = model.cuda()
+        
+        # Benchmark inference
+        self.logger.info("Benchmarking inference performance...")
+        results['inference'] = self.benchmark_model_inference(model, data_batch)
+        
+        # Benchmark data loading
+        self.logger.info("Benchmarking data loading performance...")
+        results['data_loading'] = self.benchmark_data_loading(dataloader)
+        
+        # Benchmark memory usage
+        self.logger.info("Benchmarking memory usage...")
+        results['memory'] = self.benchmark_memory_usage(model, data_batch)
+        
+        # System metrics
+        results['system'] = {
+            'cpu_count': os.cpu_count(),
+            'memory_total_gb': psutil.virtual_memory().total / 1024**3,
+            'gpu_available': self.torch.cuda.is_available() if self.torch else False
+        }
+        
+        if self.torch and self.torch.cuda.is_available():
+            results['system']['gpu_memory_gb'] = self.torch.cuda.get_device_properties(0).total_memory / 1024**3
+        
+        # Save results
+        if save_results:
+            self._save_benchmark_results(results)
+        
+        return results
+    
+    def _save_benchmark_results(self, results: Dict[str, Any]):
+        """Save benchmark results to file."""
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"benchmark_results_{timestamp}.json"
+        
+        try:
+            with open(filename, 'w') as f:
+                json.dump(results, f, indent=2, default=str)
+            self.logger.info(f"Benchmark results saved to {filename}")
+        except Exception as e:
+            self.logger.error(f"Failed to save benchmark results: {e}")
+
+
+class AdaptivePerformanceManager:
+    """Manages performance adaptively based on system resources."""
+    
+    def __init__(self, logger: Optional[logging.Logger] = None):
+        self.logger = logger or get_logger("adaptive_performance")
+        self.collector = MetricsCollector(logger)
+        
+        # Performance thresholds
+        self.cpu_threshold = 80.0  # CPU usage percentage
+        self.memory_threshold = 85.0  # Memory usage percentage
+        self.gpu_memory_threshold = 90.0  # GPU memory percentage
+        
+        # Adaptive settings
+        self.current_batch_size = 32
+        self.current_num_workers = 4
+        self.adjustment_history = []
+        
+    def monitor_and_adjust(self, model, dataloader_kwargs: Dict) -> Dict[str, Any]:
+        """Monitor performance and adjust settings adaptively."""
+        metrics = self.collector.collect_metrics()
+        adjustments = {}
+        
+        # Check CPU usage
+        if metrics.cpu_percent > self.cpu_threshold:
+            # Reduce number of workers
+            if self.current_num_workers > 1:
+                self.current_num_workers -= 1
+                adjustments['num_workers'] = self.current_num_workers
+                self.logger.info(f"Reduced num_workers to {self.current_num_workers} due to high CPU usage")
+        
+        # Check memory usage
+        if metrics.memory_usage_mb > self.memory_threshold:
+            # Reduce batch size
+            if self.current_batch_size > 1:
+                self.current_batch_size = max(1, self.current_batch_size // 2)
+                adjustments['batch_size'] = self.current_batch_size
+                self.logger.info(f"Reduced batch_size to {self.current_batch_size} due to high memory usage")
+        
+        # Check GPU memory
+        if metrics.gpu_memory_mb > 0 and metrics.gpu_memory_mb > self.gpu_memory_threshold:
+            # Enable memory optimizations
+            adjustments['enable_gradient_checkpointing'] = True
+            adjustments['enable_mixed_precision'] = True
+            self.logger.info("Enabled memory optimizations due to high GPU memory usage")
+        
+        # Record adjustment
+        if adjustments:
+            self.adjustment_history.append({
+                'timestamp': time.time(),
+                'metrics': metrics,
+                'adjustments': adjustments
+            })
+        
+        return adjustments
+    
+    def get_optimal_settings(self, system_info: Dict) -> Dict[str, Any]:
+        """Get optimal settings based on system information."""
+        settings = {}
+        
+        # CPU-based recommendations
+        cpu_count = system_info.get('cpu_count', 4)
+        settings['num_workers'] = min(4, max(1, cpu_count - 1))
+        
+        # Memory-based recommendations
+        memory_gb = system_info.get('memory_total_gb', 8)
+        if memory_gb >= 32:
+            settings['batch_size'] = 64
+        elif memory_gb >= 16:
+            settings['batch_size'] = 32
+        else:
+            settings['batch_size'] = 16
+        
+        # GPU-based recommendations
+        if system_info.get('gpu_available', False):
+            gpu_memory_gb = system_info.get('gpu_memory_gb', 8)
+            if gpu_memory_gb >= 24:
+                settings['enable_mixed_precision'] = False  # High memory, can use full precision
+            else:
+                settings['enable_mixed_precision'] = True   # Limited memory, use mixed precision
+        
+        return settings
+
+
+# Global performance manager
+_global_performance_manager = None
+
+def get_performance_manager() -> AdaptivePerformanceManager:
+    """Get global performance manager instance."""
+    global _global_performance_manager
+    if _global_performance_manager is None:
+        _global_performance_manager = AdaptivePerformanceManager()
+    return _global_performance_manager
+
+
+@contextmanager
+def performance_monitoring_context(interval: float = 1.0):
+    """Context manager for performance monitoring."""
+    collector = MetricsCollector()
+    
+    try:
+        collector.start_monitoring(interval)
+        yield collector
+    finally:
+        collector.stop_monitoring()
+        
     def collect_system_metrics(self) -> Dict[str, float]:
         """Collect current system metrics."""
         metrics = {}

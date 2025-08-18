@@ -52,6 +52,225 @@ class ValidationError(ConnectomeError):
         self.validation_type = validation_type
 
 
+class ConfigurationError(ConnectomeError):
+    """Exception for configuration-related errors."""
+    
+    def __init__(self, message: str, config_key: str = None, **kwargs):
+        super().__init__(message, error_code="CONFIG_ERROR", **kwargs)
+        self.config_key = config_key
+
+
+class SecurityError(ConnectomeError):
+    """Exception for security-related errors."""
+    
+    def __init__(self, message: str, security_type: str = None, **kwargs):
+        super().__init__(message, error_code="SECURITY_ERROR", **kwargs)
+        self.security_type = security_type
+
+
+class ErrorHandler:
+    """Centralized error handling and logging."""
+    
+    def __init__(self, log_dir: Optional[str] = None, enable_file_logging: bool = True):
+        self.log_dir = Path(log_dir) if log_dir else Path.cwd() / ".connectome_logs"
+        self.enable_file_logging = enable_file_logging
+        
+        # Create log directory
+        if self.enable_file_logging:
+            self.log_dir.mkdir(exist_ok=True)
+        
+        # Setup logger
+        self.logger = self._setup_logger()
+        
+        # Error statistics
+        self.error_counts = {}
+        self.recent_errors = []
+    
+    def _setup_logger(self) -> logging.Logger:
+        """Setup comprehensive logging."""
+        logger = logging.getLogger("connectome_error_handler")
+        logger.setLevel(logging.DEBUG)
+        
+        # Clear existing handlers
+        logger.handlers.clear()
+        
+        # Console handler
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.WARNING)
+        console_format = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        console_handler.setFormatter(console_format)
+        logger.addHandler(console_handler)
+        
+        # File handler
+        if self.enable_file_logging:
+            error_file = self.log_dir / f"errors_{datetime.now().strftime('%Y%m%d')}.log"
+            file_handler = logging.FileHandler(error_file)
+            file_handler.setLevel(logging.DEBUG)
+            file_format = logging.Formatter(
+                '%(asctime)s - %(levelname)s - %(name)s:%(lineno)d - %(message)s'
+            )
+            file_handler.setFormatter(file_format)
+            logger.addHandler(file_handler)
+        
+        return logger
+    
+    def handle_error(self, error: Exception, context: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Handle and log errors with context."""
+        error_info = {
+            'error_type': type(error).__name__,
+            'error_message': str(error),
+            'timestamp': datetime.now().isoformat(),
+            'traceback': traceback.format_exc(),
+            'context': context or {}
+        }
+        
+        # Add specific error details
+        if isinstance(error, ConnectomeError):
+            error_info.update({
+                'error_code': error.error_code,
+                'details': error.details
+            })
+        
+        # Log the error
+        self.logger.error(f"Error occurred: {error_info['error_type']}", extra=error_info)
+        
+        # Update statistics
+        error_type = error_info['error_type']
+        self.error_counts[error_type] = self.error_counts.get(error_type, 0) + 1
+        
+        # Keep recent errors (max 100)
+        self.recent_errors.append(error_info)
+        if len(self.recent_errors) > 100:
+            self.recent_errors.pop(0)
+        
+        # Save error report if file logging enabled
+        if self.enable_file_logging:
+            self._save_error_report(error_info)
+        
+        return error_info
+    
+    def _save_error_report(self, error_info: Dict[str, Any]):
+        """Save detailed error report."""
+        error_file = self.log_dir / f"error_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        try:
+            with open(error_file, 'w') as f:
+                json.dump(error_info, f, indent=2, default=str)
+        except Exception as e:
+            self.logger.warning(f"Failed to save error report: {e}")
+    
+    def get_error_statistics(self) -> Dict[str, Any]:
+        """Get error statistics."""
+        total_errors = sum(self.error_counts.values())
+        return {
+            'total_errors': total_errors,
+            'error_counts_by_type': self.error_counts.copy(),
+            'recent_errors_count': len(self.recent_errors),
+            'most_common_error': max(self.error_counts.items(), key=lambda x: x[1])[0] if self.error_counts else None
+        }
+    
+    def create_error_context(self, function_name: str, **kwargs) -> Dict[str, Any]:
+        """Create error context for better debugging."""
+        return {
+            'function': function_name,
+            'timestamp': datetime.now().isoformat(),
+            'python_version': sys.version,
+            'arguments': {k: str(v) if not callable(v) else f"<callable: {v.__name__}>" for k, v in kwargs.items()}
+        }
+
+
+def error_handler_decorator(error_handler: ErrorHandler):
+    """Decorator for automatic error handling."""
+    def decorator(func: Callable):
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                context = error_handler.create_error_context(func.__name__, **kwargs)
+                error_info = error_handler.handle_error(e, context)
+                
+                # Re-raise with additional context
+                if isinstance(e, ConnectomeError):
+                    e.details.update({'handler_context': context})
+                    raise e
+                else:
+                    # Wrap in ConnectomeError
+                    raise ConnectomeError(
+                        f"Error in {func.__name__}: {str(e)}",
+                        error_code="WRAPPED_ERROR",
+                        details={'original_error': str(e), 'context': context}
+                    ) from e
+        
+        return wrapper
+    return decorator
+
+
+def safe_execute(func: Callable, *args, error_handler: ErrorHandler = None, 
+                default_return=None, **kwargs):
+    """Safely execute a function with error handling."""
+    try:
+        return func(*args, **kwargs)
+    except Exception as e:
+        if error_handler:
+            context = error_handler.create_error_context(func.__name__, **kwargs)
+            error_handler.handle_error(e, context)
+        else:
+            logging.error(f"Error in {func.__name__}: {e}")
+        
+        return default_return
+
+
+class RetryHandler:
+    """Handle retries with exponential backoff."""
+    
+    def __init__(self, max_retries: int = 3, base_delay: float = 1.0, 
+                 max_delay: float = 60.0, backoff_factor: float = 2.0):
+        self.max_retries = max_retries
+        self.base_delay = base_delay
+        self.max_delay = max_delay
+        self.backoff_factor = backoff_factor
+    
+    def retry(self, func: Callable, *args, **kwargs):
+        """Retry function execution with exponential backoff."""
+        import time
+        
+        last_exception = None
+        
+        for attempt in range(self.max_retries + 1):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                last_exception = e
+                
+                if attempt < self.max_retries:
+                    delay = min(self.base_delay * (self.backoff_factor ** attempt), self.max_delay)
+                    logging.warning(f"Attempt {attempt + 1} failed: {e}. Retrying in {delay:.2f}s...")
+                    time.sleep(delay)
+                else:
+                    logging.error(f"All {self.max_retries + 1} attempts failed")
+        
+        # If we get here, all retries failed
+        raise last_exception
+
+
+# Global error handler instance
+_global_error_handler = None
+
+def get_global_error_handler() -> ErrorHandler:
+    """Get global error handler instance."""
+    global _global_error_handler
+    if _global_error_handler is None:
+        _global_error_handler = ErrorHandler()
+    return _global_error_handler
+
+
+def set_global_error_handler(error_handler: ErrorHandler):
+    """Set global error handler instance."""
+    global _global_error_handler
+    _global_error_handler = error_handler
+
+
 class SecurityError(ConnectomeError):
     """Exception for security-related errors."""
     

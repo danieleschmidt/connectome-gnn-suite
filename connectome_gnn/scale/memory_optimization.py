@@ -56,6 +56,326 @@ class MemoryProfiler:
         return stats
     
     def take_snapshot(self, label: str = None) -> MemoryStats:
+        """Take a memory snapshot with optional label."""
+        stats = self.get_memory_stats()
+        snapshot = {
+            'timestamp': time.time(),
+            'label': label or f"snapshot_{len(self.snapshots)}",
+            'stats': stats
+        }
+        self.snapshots.append(snapshot)
+        return stats
+    
+    def compare_snapshots(self, start_idx: int = 0, end_idx: int = -1) -> Dict[str, float]:
+        """Compare memory usage between snapshots."""
+        if len(self.snapshots) < 2:
+            return {}
+        
+        start_stats = self.snapshots[start_idx]['stats']
+        end_stats = self.snapshots[end_idx]['stats']
+        
+        return {
+            'rss_diff_mb': end_stats.rss_mb - start_stats.rss_mb,
+            'vms_diff_mb': end_stats.vms_mb - start_stats.vms_mb,
+            'gpu_allocated_diff_mb': end_stats.gpu_allocated_mb - start_stats.gpu_allocated_mb,
+            'gpu_cached_diff_mb': end_stats.gpu_cached_mb - start_stats.gpu_cached_mb
+        }
+    
+    def get_peak_memory(self) -> MemoryStats:
+        """Get peak memory usage from all snapshots."""
+        if not self.snapshots:
+            return self.get_memory_stats()
+        
+        peak_rss = max(snap['stats'].rss_mb for snap in self.snapshots)
+        peak_gpu = max(snap['stats'].gpu_allocated_mb for snap in self.snapshots)
+        
+        # Find snapshot with peak memory
+        peak_snapshot = max(self.snapshots, key=lambda x: x['stats'].rss_mb)
+        return peak_snapshot['stats']
+    
+    @contextmanager
+    def profile_memory(self, label: str = None):
+        """Context manager for memory profiling."""
+        start_label = f"{label}_start" if label else "start"
+        end_label = f"{label}_end" if label else "end"
+        
+        self.take_snapshot(start_label)
+        try:
+            yield self
+        finally:
+            self.take_snapshot(end_label)
+            diff = self.compare_snapshots(-2, -1)
+            self.logger.info(f"Memory usage for {label}: {diff}")
+
+
+class MemoryOptimizer:
+    """Optimizes memory usage for large-scale training."""
+    
+    def __init__(self, logger: Optional[logging.Logger] = None):
+        self.logger = logger or get_logger("memory_optimizer")
+        self.torch = safe_import('torch')
+        self.profiler = MemoryProfiler(logger)
+        
+        # Optimization settings
+        self.gradient_checkpointing = False
+        self.mixed_precision = False
+        self.memory_efficient_attention = False
+        self.cpu_offloading = False
+        
+    def enable_gradient_checkpointing(self, model):
+        """Enable gradient checkpointing to trade compute for memory."""
+        if hasattr(model, 'gradient_checkpointing_enable'):
+            model.gradient_checkpointing_enable()
+            self.gradient_checkpointing = True
+            self.logger.info("Gradient checkpointing enabled")
+        else:
+            self.logger.warning("Model does not support gradient checkpointing")
+    
+    def enable_mixed_precision(self):
+        """Enable mixed precision training."""
+        if self.torch and hasattr(self.torch.cuda, 'amp'):
+            self.mixed_precision = True
+            self.logger.info("Mixed precision training enabled")
+            return True
+        else:
+            self.logger.warning("Mixed precision not available")
+            return False
+    
+    def optimize_batch_size(self, model, initial_batch_size: int = 32, 
+                          max_memory_gb: float = 8.0) -> int:
+        """Find optimal batch size based on memory constraints."""
+        if not self.torch or not self.torch.cuda.is_available():
+            return initial_batch_size
+        
+        optimal_batch_size = initial_batch_size
+        
+        # Binary search for optimal batch size
+        low, high = 1, initial_batch_size * 4
+        
+        while low <= high:
+            mid = (low + high) // 2
+            
+            try:
+                # Test batch size
+                with self.profiler.profile_memory(f"batch_size_test_{mid}"):
+                    success = self._test_batch_size(model, mid)
+                
+                current_memory = self.torch.cuda.max_memory_allocated() / 1024**3
+                
+                if success and current_memory < max_memory_gb:
+                    optimal_batch_size = mid
+                    low = mid + 1
+                else:
+                    high = mid - 1
+                    
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    high = mid - 1
+                else:
+                    raise e
+            finally:
+                self._cleanup_memory()
+        
+        self.logger.info(f"Optimal batch size: {optimal_batch_size}")
+        return optimal_batch_size
+    
+    def _test_batch_size(self, model, batch_size: int) -> bool:
+        """Test if a batch size fits in memory."""
+        try:
+            # Create dummy batch
+            dummy_input = self._create_dummy_batch(model, batch_size)
+            
+            # Forward pass
+            with self.torch.no_grad():
+                output = model(dummy_input)
+            
+            return True
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                return False
+            raise e
+    
+    def _create_dummy_batch(self, model, batch_size: int):
+        """Create dummy batch for testing."""
+        # This would need to be customized based on model input format
+        if hasattr(model, 'config'):
+            input_dim = getattr(model.config, 'node_features', 100)
+            num_nodes = 100
+            
+            # Create dummy graph data
+            if self.torch:
+                dummy_data = type('DummyData', (), {})()
+                dummy_data.x = self.torch.randn(batch_size * num_nodes, input_dim)
+                dummy_data.edge_index = self.torch.randint(0, num_nodes, (2, num_nodes * 5))
+                dummy_data.batch = self.torch.repeat_interleave(
+                    self.torch.arange(batch_size), num_nodes
+                )
+                return dummy_data
+        
+        return None
+    
+    def _cleanup_memory(self):
+        """Clean up GPU memory."""
+        if self.torch and self.torch.cuda.is_available():
+            self.torch.cuda.empty_cache()
+        gc.collect()
+    
+    def setup_efficient_training(self, model, optimizer=None):
+        """Setup memory-efficient training configuration."""
+        optimizations = []
+        
+        # Enable gradient checkpointing
+        if hasattr(model, 'gradient_checkpointing_enable'):
+            self.enable_gradient_checkpointing(model)
+            optimizations.append("gradient_checkpointing")
+        
+        # Enable mixed precision
+        if self.enable_mixed_precision():
+            optimizations.append("mixed_precision")
+        
+        # Setup efficient optimizer settings
+        if optimizer and hasattr(optimizer, 'param_groups'):
+            for group in optimizer.param_groups:
+                # Reduce memory overhead in optimizer
+                if 'eps' not in group:
+                    group['eps'] = 1e-4  # Smaller epsilon saves memory
+        
+        self.logger.info(f"Enabled optimizations: {optimizations}")
+        return optimizations
+    
+    def monitor_memory_usage(self, threshold_mb: float = 1000.0):
+        """Monitor memory usage and warn if threshold exceeded."""
+        stats = self.profiler.get_memory_stats()
+        
+        if stats.rss_mb > threshold_mb:
+            self.logger.warning(f"High memory usage: {stats.rss_mb:.1f}MB RSS")
+        
+        if stats.gpu_allocated_mb > threshold_mb:
+            self.logger.warning(f"High GPU memory usage: {stats.gpu_allocated_mb:.1f}MB")
+        
+        return stats
+    
+    def get_memory_recommendations(self) -> List[str]:
+        """Get memory optimization recommendations."""
+        recommendations = []
+        stats = self.profiler.get_memory_stats()
+        
+        # High memory usage
+        if stats.rss_mb > 4000:
+            recommendations.append("Consider reducing batch size")
+            recommendations.append("Enable gradient checkpointing")
+        
+        # GPU memory issues
+        if stats.gpu_allocated_mb > 6000:
+            recommendations.append("Enable mixed precision training")
+            recommendations.append("Consider model parallelism")
+        
+        # System memory pressure
+        if stats.percent_used > 80:
+            recommendations.append("Close unnecessary applications")
+            recommendations.append("Consider using CPU offloading")
+        
+        return recommendations
+
+
+class DataLoaderOptimizer:
+    """Optimizes data loading for memory efficiency."""
+    
+    def __init__(self, num_workers: int = None, pin_memory: bool = None):
+        self.num_workers = num_workers or min(4, os.cpu_count())
+        self.pin_memory = pin_memory or self.torch.cuda.is_available() if hasattr(self, 'torch') else False
+        self.torch = safe_import('torch')
+        
+    def create_efficient_dataloader(self, dataset, batch_size: int, **kwargs):
+        """Create memory-efficient DataLoader."""
+        if not self.torch:
+            raise ImportError("PyTorch not available")
+        
+        # Default efficient settings
+        dataloader_kwargs = {
+            'batch_size': batch_size,
+            'num_workers': self.num_workers,
+            'pin_memory': self.pin_memory,
+            'persistent_workers': True if self.num_workers > 0 else False,
+            'prefetch_factor': 2 if self.num_workers > 0 else 2,
+        }
+        
+        # Override with user settings
+        dataloader_kwargs.update(kwargs)
+        
+        from torch_geometric.loader import DataLoader
+        return DataLoader(dataset, **dataloader_kwargs)
+    
+    def estimate_memory_per_batch(self, dataset, batch_size: int) -> float:
+        """Estimate memory usage per batch."""
+        if len(dataset) == 0:
+            return 0.0
+        
+        # Sample a few items to estimate
+        sample_items = min(5, len(dataset))
+        total_size = 0
+        
+        for i in range(sample_items):
+            item = dataset[i]
+            total_size += self._estimate_item_size(item)
+        
+        avg_item_size = total_size / sample_items
+        batch_memory_mb = (avg_item_size * batch_size) / 1024 / 1024
+        
+        return batch_memory_mb
+    
+    def _estimate_item_size(self, item) -> int:
+        """Estimate memory size of a data item."""
+        total_size = 0
+        
+        if hasattr(item, 'x') and hasattr(item.x, 'numel'):
+            total_size += item.x.numel() * 4  # Assume float32
+        
+        if hasattr(item, 'edge_index') and hasattr(item.edge_index, 'numel'):
+            total_size += item.edge_index.numel() * 8  # Assume int64
+        
+        if hasattr(item, 'edge_attr') and hasattr(item.edge_attr, 'numel'):
+            total_size += item.edge_attr.numel() * 4  # Assume float32
+        
+        return total_size
+
+
+# Global memory optimizer instance
+_global_memory_optimizer = None
+
+def get_memory_optimizer() -> MemoryOptimizer:
+    """Get global memory optimizer instance."""
+    global _global_memory_optimizer
+    if _global_memory_optimizer is None:
+        _global_memory_optimizer = MemoryOptimizer()
+    return _global_memory_optimizer
+
+
+def memory_efficient_training_context(model, enable_checkpointing: bool = True,
+                                    enable_mixed_precision: bool = True):
+    """Context manager for memory-efficient training."""
+    @contextmanager
+    def context():
+        optimizer = get_memory_optimizer()
+        original_state = {}
+        
+        try:
+            # Setup efficient training
+            if enable_checkpointing:
+                optimizer.enable_gradient_checkpointing(model)
+            
+            if enable_mixed_precision:
+                optimizer.enable_mixed_precision()
+            
+            yield optimizer
+            
+        finally:
+            # Cleanup
+            optimizer._cleanup_memory()
+    
+    return context()
+    
+    def take_snapshot(self, label: str = None) -> MemoryStats:
         """Take a memory snapshot."""
         stats = self.get_memory_stats()
         

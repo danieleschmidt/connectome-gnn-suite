@@ -3,11 +3,15 @@
     "score": 100.0,
     "details": {
       "connectome_gnn/__init__.py": true,
+      "connectome_gnn/adaptive_learning.py": true,
       "connectome_gnn/advanced_training.py": true,
+      "connectome_gnn/autonomous_workflow.py": true,
       "connectome_gnn/caching.py": true,
       "connectome_gnn/cli.py": true,
       "connectome_gnn/optimization.py": true,
+      "connectome_gnn/progressive_gates.py": true,
       "connectome_gnn/security.py": true,
+      "connectome_gnn/terragon_orchestrator.py": true,
       "connectome_gnn/training.py": true,
       "connectome_gnn/utils.py": true,
       "connectome_gnn/validation.py": true,
@@ -23,13 +27,13 @@
       "connectome_gnn/optimization/inference.py": true,
       "connectome_gnn/optimization/memory_efficient.py": true,
       "connectome_gnn/research/__init__.py": true,
+      "connectome_gnn/research/advanced_visualization.py": true,
       "connectome_gnn/research/benchmarking.py": true,
       "connectome_gnn/research/experimental.py": true,
       "connectome_gnn/research/interpretability.py": true,
       "connectome_gnn/research/novel_architectures.py": true,
       "connectome_gnn/research/publication.py": true,
       "connectome_gnn/research/statistical_validation.py": true,
-      "connectome_gnn/research/advanced_visualization.py": true,
       "connectome_gnn/robust/__init__.py": true,
       "connectome_gnn/robust/error_handling.py": true,
       "connectome_gnn/robust/logging_config.py": true,
@@ -51,11 +55,22 @@
       "connectome_gnn/training/trainer.py": true,
       "connectome_gnn/visualization/__init__.py": true,
       "connectome_gnn/visualization/brain_plots.py": true,
-      "connectome_gnn/visualization/explainer.py": true
+      "connectome_gnn/visualization/explainer.py": true,
+      "connectome_gnn/models/hierarchical.py": true,
+      "connectome_gnn/models/temporal.py": true,
+      "connectome_gnn/models/__init__.py": true,
+      "connectome_gnn/models/base.py": true,
+      "connectome_gnn/models/multimodal.py": true,
+      "connectome_gnn/models/population.py": true,
+      "connectome_gnn/data/__init__.py": true,
+      "connectome_gnn/data/dataset.py": true,
+      "connectome_gnn/data/processor.py": true,
+      "connectome_gnn/data/hcp_loader.py": true,
+      "connectome_gnn/data/synthetic.py": true
     }
   },
   "structure_validation": {
-    "score": 92.5925925925926,
+    "score": 100.0,
     "details": {
       "connectome_gnn": true,
       "connectome_gnn/__init__.py": true,
@@ -63,8 +78,18 @@
       "connectome_gnn/training.py": true,
       "connectome_gnn/advanced_training.py": true,
       "connectome_gnn/utils.py": true,
-      "connectome_gnn/data": false,
-      "connectome_gnn/models": false,
+      "connectome_gnn/data": true,
+      "connectome_gnn/data/__init__.py": true,
+      "connectome_gnn/data/dataset.py": true,
+      "connectome_gnn/data/processor.py": true,
+      "connectome_gnn/data/hcp_loader.py": true,
+      "connectome_gnn/models": true,
+      "connectome_gnn/models/__init__.py": true,
+      "connectome_gnn/models/base.py": true,
+      "connectome_gnn/models/hierarchical.py": true,
+      "connectome_gnn/models/temporal.py": true,
+      "connectome_gnn/models/multimodal.py": true,
+      "connectome_gnn/models/population.py": true,
       "connectome_gnn/tasks": true,
       "connectome_gnn/tasks/__init__.py": true,
       "connectome_gnn/tasks/base.py": true,
@@ -87,11 +112,11 @@
     }
   },
   "code_metrics": {
-    "total_lines": 20697,
-    "code_lines": 14914,
-    "comment_lines": 1492,
-    "blank_lines": 4291,
-    "files_count": 50
+    "total_lines": 27479,
+    "code_lines": 19729,
+    "comment_lines": 2092,
+    "blank_lines": 5658,
+    "files_count": 65
   },
   "complexity_analysis": {
     "connectome_gnn/__init__.py": {
@@ -100,6 +125,15 @@
       "imports": 10,
       "if_statements": 4,
       "for_loops": 0,
+      "while_loops": 0,
+      "try_blocks": 4
+    },
+    "connectome_gnn/adaptive_learning.py": {
+      "classes": 8,
+      "functions": 30,
+      "imports": 15,
+      "if_statements": 57,
+      "for_loops": 25,
       "while_loops": 0,
       "try_blocks": 4
     },
@@ -112,6 +146,15 @@
       "while_loops": 0,
       "try_blocks": 0
     },
+    "connectome_gnn/autonomous_workflow.py": {
+      "classes": 6,
+      "functions": 37,
+      "imports": 20,
+      "if_statements": 26,
+      "for_loops": 8,
+      "while_loops": 1,
+      "try_blocks": 7
+    },
     "connectome_gnn/caching.py": {
       "classes": 3,
       "functions": 27,
@@ -120,35 +163,17 @@
       "for_loops": 5,
       "while_loops": 1,
       "try_blocks": 7
-    },
-    "connectome_gnn/cli.py": {
-      "classes": 0,
-      "functions": 5,
-      "imports": 19,
-      "if_statements": 22,
-      "for_loops": 4,
-      "while_loops": 0,
-      "try_blocks": 4
-    },
-    "connectome_gnn/optimization.py": {
-      "classes": 5,
-      "functions": 19,
-      "imports": 9,
-      "if_statements": 20,
-      "for_loops": 7,
-      "while_loops": 1,
-      "try_blocks": 6
     }
   },
   "completeness_validation": {
-    "score": 0.0,
+    "score": 90.0,
     "details": {
-      "connectome_gnn/models/base.py": 0.0,
-      "connectome_gnn/models/hierarchical.py": 0.0,
-      "connectome_gnn/models/temporal.py": 0.0,
-      "connectome_gnn/models/multimodal.py": 0.0,
-      "connectome_gnn/models/population.py": 0.0
+      "connectome_gnn/models/base.py": 0.5,
+      "connectome_gnn/models/hierarchical.py": 1.0,
+      "connectome_gnn/models/temporal.py": 1.0,
+      "connectome_gnn/models/multimodal.py": 1.0,
+      "connectome_gnn/models/population.py": 1.0
     }
   },
-  "overall_score": 64.19753086419753
+  "overall_score": 96.66666666666667
 }

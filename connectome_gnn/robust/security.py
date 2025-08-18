@@ -6,10 +6,18 @@ import os
 import re
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union, Tuple
+from typing import Any, Dict, List, Optional, Union, Tuple, Callable
 import tempfile
 import shutil
 import logging
+import numpy as np
+
+
+class SecurityError(Exception):
+    """Security-related exception."""
+    def __init__(self, message: str, security_type: str = None):
+        super().__init__(message)
+        self.security_type = security_type
 
 
 class SecurityManager:
@@ -50,53 +58,84 @@ class SecurityManager:
         # Check for dangerous filename patterns
         for pattern in self.blocked_patterns:
             if re.search(pattern, filename, re.IGNORECASE):
-                issues.append(f"Filename contains dangerous pattern: {pattern}")
-                break
+                issues.append(f"Dangerous pattern in filename: {pattern}")
         
-        # Check file content (basic checks)
-        try:
-            # Check for null bytes
-            if b'\x00' in content:
-                issues.append("File contains null bytes")
-            
-            # For text-based files, check for scripts
-            if file_ext in {'.json', '.csv'}:
-                content_str = content[:1000].decode('utf-8', errors='ignore').lower()
-                if '<script' in content_str or 'javascript:' in content_str:
-                    issues.append("File content contains potentially dangerous scripts")
-        except Exception as e:
-            issues.append(f"Error analyzing file content: {e}")
+        # Check content for malicious patterns (for text files)
+        if file_ext in {'.json', '.csv', '.txt'}:
+            try:
+                content_str = content.decode('utf-8', errors='ignore')
+                for pattern in self.blocked_patterns:
+                    if re.search(pattern, content_str, re.IGNORECASE):
+                        issues.append(f"Dangerous content pattern detected: {pattern}")
+            except Exception:
+                pass  # Binary content, skip text analysis
         
-        is_safe = len(issues) == 0
-        
-        if not is_safe:
-            self.logger.warning(f"File validation failed for {filename}: {issues}")
-        
-        return is_safe, issues
+        return len(issues) == 0, issues
     
     def sanitize_filename(self, filename: str) -> str:
         """Sanitize filename for safe storage."""
-        # Remove path components
+        # Get only the filename part
         filename = Path(filename).name
         
         # Remove or replace dangerous characters
-        filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', filename)
+        safe_filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+        safe_filename = re.sub(r'\.{2,}', '.', safe_filename)  # Multiple dots
+        safe_filename = safe_filename.strip('. ')  # Leading/trailing dots and spaces
         
-        # Limit length
-        if len(filename) > 255:
-            name, ext = os.path.splitext(filename)
-            filename = name[:255-len(ext)] + ext
+        # Ensure it's not empty
+        if not safe_filename:
+            safe_filename = f"file_{os.urandom(8).hex()}"
         
-        # Ensure filename is not empty
-        if not filename or filename.startswith('.'):
-            filename = 'safe_file' + (Path(filename).suffix if filename else '.txt')
-        
-        return filename
+        return safe_filename
     
-    def create_secure_temp_file(self, suffix: str = None) -> str:
+    def validate_json_input(self, data: Union[str, Dict]) -> Tuple[bool, List[str], Optional[Dict]]:
+        """Validate JSON input for security issues."""
+        issues = []
+        parsed_data = None
+        
+        try:
+            if isinstance(data, str):
+                parsed_data = json.loads(data)
+            else:
+                parsed_data = data
+        except json.JSONDecodeError as e:
+            issues.append(f"Invalid JSON: {e}")
+            return False, issues, None
+        
+        # Check for dangerous keys or values
+        dangerous_keys = ['__import__', 'eval', 'exec', 'open', 'file', '__builtins__']
+        
+        def check_dict_recursively(obj, path=""):
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    current_path = f"{path}.{key}" if path else key
+                    
+                    # Check for dangerous keys
+                    if key in dangerous_keys:
+                        issues.append(f"Dangerous key detected: {current_path}")
+                    
+                    # Check for dangerous values
+                    if isinstance(value, str):
+                        for pattern in self.blocked_patterns:
+                            if re.search(pattern, value, re.IGNORECASE):
+                                issues.append(f"Dangerous value at {current_path}: {pattern}")
+                    
+                    # Recurse into nested structures
+                    check_dict_recursively(value, current_path)
+            elif isinstance(obj, list):
+                for i, item in enumerate(obj):
+                    current_path = f"{path}[{i}]" if path else f"[{i}]"
+                    check_dict_recursively(item, current_path)
+        
+        check_dict_recursively(parsed_data)
+        
+        return len(issues) == 0, issues, parsed_data
+    
+    def create_secure_temp_file(self, suffix: str = '', prefix: str = 'connectome_') -> str:
         """Create a secure temporary file."""
-        fd, temp_path = tempfile.mkstemp(suffix=suffix)
-        os.close(fd)  # Close the file descriptor
+        # Create temporary file with secure permissions
+        fd, temp_path = tempfile.mkstemp(suffix=suffix, prefix=prefix)
+        os.close(fd)
         
         # Set restrictive permissions (owner read/write only)
         os.chmod(temp_path, 0o600)
@@ -124,24 +163,24 @@ class SecurityManager:
                 self.logger.error(f"File too large: {file_size} bytes")
                 return False
             
-            # Create destination directory if needed
-            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            # Validate destination directory
+            dst_dir = dst_path.parent
+            dst_dir.mkdir(parents=True, exist_ok=True)
             
-            # Copy file
+            # Perform secure copy
             shutil.copy2(src_path, dst_path)
             
             # Set secure permissions on destination
-            os.chmod(dst_path, 0o600)
+            os.chmod(dst_path, 0o644)
             
-            self.logger.info(f"Securely copied file from {src_path} to {dst_path}")
             return True
             
         except Exception as e:
             self.logger.error(f"Secure file copy failed: {e}")
             return False
     
-    def compute_file_hash(self, filepath: str, algorithm: str = 'sha256') -> str:
-        """Compute secure hash of file content."""
+    def generate_file_hash(self, filepath: str, algorithm: str = 'sha256') -> str:
+        """Generate secure hash of a file."""
         hash_func = hashlib.new(algorithm)
         
         try:
@@ -150,295 +189,209 @@ class SecurityManager:
                     hash_func.update(chunk)
             return hash_func.hexdigest()
         except Exception as e:
-            self.logger.error(f"Failed to compute hash for {filepath}: {e}")
-            return ""
+            self.logger.error(f"Hash generation failed: {e}")
+            raise SecurityError(f"Failed to generate hash: {e}", security_type="hash_generation")
     
     def verify_file_integrity(self, filepath: str, expected_hash: str, 
                             algorithm: str = 'sha256') -> bool:
         """Verify file integrity using hash."""
-        actual_hash = self.compute_file_hash(filepath, algorithm)
-        return hmac.compare_digest(actual_hash, expected_hash)
-    
-    def secure_json_load(self, filepath: str) -> Optional[Dict[str, Any]]:
-        """Securely load JSON file with validation."""
         try:
-            # Validate file path
-            filepath = Path(filepath).resolve()
-            
-            # Check file size
-            file_size = filepath.stat().st_size
-            if file_size > 10 * 1024 * 1024:  # 10MB limit for JSON
-                self.logger.error(f"JSON file too large: {file_size} bytes")
-                return None
-            
-            # Load and parse JSON
-            with open(filepath, 'r', encoding='utf-8') as f:
-                content = f.read()
-                
-                # Basic security check for JSON content
-                if len(content) > 10 * 1024 * 1024:  # 10MB content limit
-                    self.logger.error("JSON content too large")
-                    return None
-                
-                data = json.loads(content)
-                
-                # Validate JSON structure (no deeply nested objects)
-                if self._check_json_depth(data) > 20:
-                    self.logger.error("JSON structure too deeply nested")
-                    return None
-                
-                return data
-                
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Invalid JSON in {filepath}: {e}")
-            return None
+            actual_hash = self.generate_file_hash(filepath, algorithm)
+            return hmac.compare_digest(expected_hash.lower(), actual_hash.lower())
         except Exception as e:
-            self.logger.error(f"Error loading JSON from {filepath}: {e}")
+            self.logger.error(f"Integrity verification failed: {e}")
+            return False
+    
+    def sanitize_path(self, path: str, base_dir: Optional[str] = None) -> Optional[str]:
+        """Sanitize file path to prevent directory traversal."""
+        try:
+            # Resolve the path
+            clean_path = Path(path).resolve()
+            
+            # If base directory specified, ensure path is within it
+            if base_dir:
+                base_path = Path(base_dir).resolve()
+                try:
+                    clean_path.relative_to(base_path)
+                except ValueError:
+                    self.logger.warning(f"Path outside base directory: {path}")
+                    return None
+            
+            return str(clean_path)
+            
+        except Exception as e:
+            self.logger.error(f"Path sanitization failed: {e}")
             return None
     
-    def _check_json_depth(self, obj: Any, depth: int = 0) -> int:
-        """Check maximum depth of JSON object."""
-        if depth > 20:  # Prevent excessive recursion
-            return depth
+    def create_api_key(self, identifier: str = None) -> str:
+        """Create a secure API key."""
+        # Generate random component
+        random_part = os.urandom(24)
         
-        if isinstance(obj, dict):
-            return max([self._check_json_depth(v, depth + 1) for v in obj.values()] + [depth])
-        elif isinstance(obj, list):
-            return max([self._check_json_depth(item, depth + 1) for item in obj] + [depth])
+        # Add identifier component if provided
+        if identifier:
+            identifier_bytes = identifier.encode('utf-8')
+            combined = identifier_bytes + random_part
         else:
-            return depth
+            combined = random_part
+        
+        # Create HMAC signature
+        signature = hmac.new(
+            self.secret_key.encode('utf-8'),
+            combined,
+            hashlib.sha256
+        ).digest()
+        
+        # Combine and encode
+        api_key_bytes = combined + signature
+        api_key = api_key_bytes.hex()
+        
+        return api_key
     
-    def secure_json_save(self, data: Dict[str, Any], filepath: str) -> bool:
-        """Securely save JSON file."""
+    def validate_api_key(self, api_key: str, identifier: str = None) -> bool:
+        """Validate an API key."""
         try:
-            # Validate data structure
-            if self._check_json_depth(data) > 20:
-                self.logger.error("Data structure too deeply nested")
-                return False
+            # Decode the key
+            api_key_bytes = bytes.fromhex(api_key)
             
-            # Serialize to check size
-            json_content = json.dumps(data, indent=2)
-            if len(json_content) > 10 * 1024 * 1024:  # 10MB limit
-                self.logger.error("JSON content too large")
-                return False
+            # Split components
+            if identifier:
+                identifier_bytes = identifier.encode('utf-8')
+                expected_len = len(identifier_bytes) + 24 + 32  # identifier + random + signature
+                if len(api_key_bytes) != expected_len:
+                    return False
+                
+                received_identifier = api_key_bytes[:len(identifier_bytes)]
+                received_random = api_key_bytes[len(identifier_bytes):-32]
+                received_signature = api_key_bytes[-32:]
+                
+                if received_identifier != identifier_bytes:
+                    return False
+                
+                combined = identifier_bytes + received_random
+            else:
+                expected_len = 24 + 32  # random + signature
+                if len(api_key_bytes) != expected_len:
+                    return False
+                
+                received_random = api_key_bytes[:-32]
+                received_signature = api_key_bytes[-32:]
+                combined = received_random
             
-            # Secure file path
-            filepath = Path(filepath).resolve()
-            filepath.parent.mkdir(parents=True, exist_ok=True)
+            # Verify signature
+            expected_signature = hmac.new(
+                self.secret_key.encode('utf-8'),
+                combined,
+                hashlib.sha256
+            ).digest()
             
-            # Write to temporary file first
-            temp_path = self.create_secure_temp_file(suffix='.json')
-            
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                f.write(json_content)
-            
-            # Move to final location
-            shutil.move(temp_path, filepath)
-            os.chmod(filepath, 0o600)
-            
-            self.logger.info(f"Securely saved JSON to {filepath}")
-            return True
+            return hmac.compare_digest(received_signature, expected_signature)
             
         except Exception as e:
-            self.logger.error(f"Error saving JSON to {filepath}: {e}")
+            self.logger.error(f"API key validation failed: {e}")
             return False
 
 
-def sanitize_input(user_input: str, max_length: int = 1000, 
-                  allow_html: bool = False) -> str:
-    """Sanitize user input for security."""
-    if not isinstance(user_input, str):
-        user_input = str(user_input)
-    
-    # Truncate to max length
-    if len(user_input) > max_length:
-        user_input = user_input[:max_length]
-    
-    # Remove null bytes
-    user_input = user_input.replace('\x00', '')
-    
-    # Remove control characters except tab, newline, carriage return
-    user_input = ''.join(char for char in user_input 
-                        if ord(char) >= 32 or char in '\t\n\r')
-    
-    if not allow_html:
-        # Remove HTML tags
-        user_input = re.sub(r'<[^>]*>', '', user_input)
-        
-        # Remove JavaScript
-        user_input = re.sub(r'javascript:', '', user_input, flags=re.IGNORECASE)
-        
-        # Remove event handlers
-        user_input = re.sub(r'on\w+\s*=', '', user_input, flags=re.IGNORECASE)
-    
-    return user_input
-
-
-def validate_file_safety(filepath: str, allowed_extensions: Optional[List[str]] = None) -> Tuple[bool, List[str]]:
-    """Validate file path for safety."""
+def validate_model_input(data: Any, max_nodes: int = 10000, max_edges: int = 100000) -> Tuple[bool, List[str]]:
+    """Validate model input data for security and size limits."""
     issues = []
-    filepath = Path(filepath)
     
     try:
-        # Check for directory traversal
-        resolved_path = filepath.resolve()
+        # Check if it's a PyTorch tensor or similar
+        if hasattr(data, 'shape'):
+            # Check tensor dimensions
+            if hasattr(data, 'size') and len(data.shape) > 4:
+                issues.append(f"Tensor has too many dimensions: {len(data.shape)}")
+            
+            # Check tensor size
+            if hasattr(data, 'numel'):
+                total_elements = data.numel()
+                if total_elements > max_nodes * max_edges:
+                    issues.append(f"Tensor too large: {total_elements} elements")
         
-        # Check if path contains dangerous patterns
-        path_str = str(resolved_path)
-        dangerous_patterns = ['../', '..\\', '~/', '/etc/', '/root/', 'C:\\Windows\\']
+        # Check for graph data
+        if hasattr(data, 'edge_index'):
+            num_edges = data.edge_index.shape[1] if hasattr(data.edge_index, 'shape') else 0
+            if num_edges > max_edges:
+                issues.append(f"Too many edges: {num_edges} > {max_edges}")
         
-        for pattern in dangerous_patterns:
-            if pattern in path_str:
-                issues.append(f"Path contains dangerous pattern: {pattern}")
-        
-        # Check file extension if specified
-        if allowed_extensions:
-            file_ext = filepath.suffix.lower()
-            if file_ext not in [ext.lower() for ext in allowed_extensions]:
-                issues.append(f"File extension {file_ext} not allowed")
-        
-        # Check for executable extensions
-        dangerous_extensions = ['.exe', '.bat', '.sh', '.cmd', '.scr', '.pif', '.com']
-        if filepath.suffix.lower() in dangerous_extensions:
-            issues.append(f"Dangerous executable extension: {filepath.suffix}")
-        
-    except Exception as e:
-        issues.append(f"Error validating path: {e}")
-    
-    is_safe = len(issues) == 0
-    return is_safe, issues
-
-
-class SecureModelLoader:
-    """Secure loader for model files."""
-    
-    def __init__(self, security_manager: SecurityManager):
-        self.security_manager = security_manager
-        self.logger = security_manager.logger
-    
-    def load_model_safely(self, model_path: str, expected_hash: Optional[str] = None) -> Optional[Any]:
-        """Safely load a model file with security checks."""
-        try:
-            # Validate file path
-            is_safe, issues = validate_file_safety(model_path, ['.pt', '.pth'])
-            if not is_safe:
-                self.logger.error(f"Unsafe model path: {issues}")
-                return None
-            
-            model_path = Path(model_path).resolve()
-            
-            # Check if file exists
-            if not model_path.exists():
-                self.logger.error(f"Model file does not exist: {model_path}")
-                return None
-            
-            # Verify file integrity if hash provided
-            if expected_hash:
-                if not self.security_manager.verify_file_integrity(str(model_path), expected_hash):
-                    self.logger.error(f"Model file integrity check failed: {model_path}")
-                    return None
-            
-            # Check file size
-            file_size = model_path.stat().st_size
-            if file_size > self.security_manager.max_file_size:
-                self.logger.error(f"Model file too large: {file_size} bytes")
-                return None
-            
-            # Try to import torch for loading
-            try:
-                import torch
-                
-                # Load model with restricted pickle loading
-                model = torch.load(model_path, map_location='cpu')
-                
-                self.logger.info(f"Successfully loaded model from {model_path}")
-                return model
-                
-            except ImportError:
-                self.logger.error("PyTorch not available for model loading")
-                return None
-            except Exception as e:
-                self.logger.error(f"Error loading model: {e}")
-                return None
-            
-        except Exception as e:
-            self.logger.error(f"Secure model loading failed: {e}")
-            return None
-    
-    def save_model_safely(self, model: Any, model_path: str, 
-                         compute_hash: bool = True) -> Optional[str]:
-        """Safely save a model file."""
-        try:
-            # Validate file path
-            is_safe, issues = validate_file_safety(model_path, ['.pt', '.pth'])
-            if not is_safe:
-                self.logger.error(f"Unsafe model path: {issues}")
-                return None
-            
-            model_path = Path(model_path).resolve()
-            model_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Try to import torch for saving
-            try:
-                import torch
-                
-                # Save to temporary file first
-                temp_path = self.security_manager.create_secure_temp_file(suffix='.pt')
-                
-                torch.save(model, temp_path)
-                
-                # Move to final location
-                shutil.move(temp_path, model_path)
-                os.chmod(model_path, 0o600)
-                
-                # Compute hash if requested
-                file_hash = None
-                if compute_hash:
-                    file_hash = self.security_manager.compute_file_hash(str(model_path))
-                
-                self.logger.info(f"Successfully saved model to {model_path}")
-                return file_hash
-                
-            except ImportError:
-                self.logger.error("PyTorch not available for model saving")
-                return None
-            except Exception as e:
-                self.logger.error(f"Error saving model: {e}")
-                return None
-            
-        except Exception as e:
-            self.logger.error(f"Secure model saving failed: {e}")
-            return None
-
-
-def create_security_report(security_manager: SecurityManager, 
-                          output_path: str) -> bool:
-    """Create a security report."""
-    try:
-        report = {
-            'timestamp': os.path.getctime,
-            'security_policies': {
-                'max_file_size': security_manager.max_file_size,
-                'allowed_extensions': list(security_manager.allowed_file_extensions),
-                'blocked_patterns': security_manager.blocked_patterns
-            },
-            'recommendations': [
-                'Regularly update allowed file extensions based on requirements',
-                'Monitor file upload sizes and adjust limits as needed',
-                'Review blocked patterns for new security threats',
-                'Enable integrity checking for all critical files',
-                'Use secure temporary files for all intermediate operations'
-            ]
-        }
-        
-        # Save report securely
-        success = security_manager.secure_json_save(report, output_path)
-        
-        if success:
-            security_manager.logger.info(f"Security report saved to {output_path}")
-        
-        return success
+        if hasattr(data, 'x') and hasattr(data.x, 'shape'):
+            num_nodes = data.x.shape[0]
+            if num_nodes > max_nodes:
+                issues.append(f"Too many nodes: {num_nodes} > {max_nodes}")
         
     except Exception as e:
-        security_manager.logger.error(f"Failed to create security report: {e}")
-        return False
+        issues.append(f"Input validation error: {e}")
+    
+    return len(issues) == 0, issues
+
+
+class InputSanitizer:
+    """Sanitize various types of inputs."""
+    
+    @staticmethod
+    def sanitize_string(value: str, max_length: int = 1000, allowed_chars: str = None) -> str:
+        """Sanitize string input."""
+        if not isinstance(value, str):
+            raise ValueError("Input must be a string")
+        
+        # Truncate if too long
+        if len(value) > max_length:
+            value = value[:max_length]
+        
+        # Remove dangerous characters if allowed_chars specified
+        if allowed_chars:
+            value = ''.join(c for c in value if c in allowed_chars)
+        
+        # Remove control characters
+        value = ''.join(c for c in value if ord(c) >= 32 or c in '\t\n\r')
+        
+        return value
+    
+    @staticmethod
+    def sanitize_number(value: Union[int, float], min_val: float = None, 
+                       max_val: float = None) -> Union[int, float]:
+        """Sanitize numeric input."""
+        if not isinstance(value, (int, float)):
+            raise ValueError("Input must be a number")
+        
+        # Check for NaN or infinity
+        if isinstance(value, float):
+            if not np.isfinite(value):
+                raise ValueError("Value must be finite")
+        
+        # Apply bounds
+        if min_val is not None and value < min_val:
+            value = min_val
+        if max_val is not None and value > max_val:
+            value = max_val
+        
+        return value
+    
+    @staticmethod
+    def sanitize_list(value: List, max_length: int = 1000, 
+                     item_sanitizer: Callable = None) -> List:
+        """Sanitize list input."""
+        if not isinstance(value, list):
+            raise ValueError("Input must be a list")
+        
+        # Truncate if too long
+        if len(value) > max_length:
+            value = value[:max_length]
+        
+        # Sanitize individual items
+        if item_sanitizer:
+            value = [item_sanitizer(item) for item in value]
+        
+        return value
+
+
+# Create global security manager
+_global_security_manager = None
+
+def get_security_manager() -> SecurityManager:
+    """Get global security manager instance."""
+    global _global_security_manager
+    if _global_security_manager is None:
+        _global_security_manager = SecurityManager()
+    return _global_security_manager

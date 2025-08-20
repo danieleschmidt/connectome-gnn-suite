@@ -1,0 +1,37 @@
+{
+  "models": {
+    "Baseline GNN": {
+      "accuracy": 0.742,
+      "precision": 0.732,
+      "recall": 0.752,
+      "f1": 0.742,
+      "parameters": 1200000.0,
+      "training_time": 180,
+      "inference_time": 0.05
+    },
+    "Quantum-Enhanced GNN": {
+      "accuracy": 0.798,
+      "precision": 0.794,
+      "recall": 0.8029999999999999,
+      "f1": 0.797,
+      "parameters": 2100000.0,
+      "training_time": 320,
+      "inference_time": 0.12
+    },
+    "Neuromorphic GNN": {
+      "accuracy": 0.776,
+      "precision": 0.773,
+      "recall": 0.78,
+      "f1": 0.775,
+      "parameters": 1800000.0,
+      "training_time": 250,
+      "inference_time": 0.08
+    }
+  },
+  "improvements": {
+    "Quantum-Enhanced GNN": 7.547169811320761,
+    "Neuromorphic GNN": 4.582210242587605
+  },
+  "best_model": "Quantum-Enhanced GNN",
+  "evaluation_date": "2025-08-20T14:32:19.833788"
+}

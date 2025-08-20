@@ -1,0 +1,40 @@
+{
+  "significance_tests": {
+    "quantum_vs_baseline": {
+      "p_value_ttest": 0.003,
+      "p_value_wilcoxon": 0.002,
+      "p_value_permutation": 0.004,
+      "cohens_d": 1.24,
+      "cliff_delta": 0.68,
+      "confidence_interval": [
+        0.778,
+        0.8180000000000001
+      ],
+      "significant_after_correction": true
+    },
+    "neuromorphic_vs_baseline": {
+      "p_value_ttest": 0.012,
+      "p_value_wilcoxon": 0.015,
+      "p_value_permutation": 0.011,
+      "cohens_d": 0.89,
+      "cliff_delta": 0.45,
+      "confidence_interval": [
+        0.751,
+        0.801
+      ],
+      "significant_after_correction": true
+    }
+  },
+  "power_analysis": {
+    "current_power": 0.95,
+    "recommended_sample_size": 45,
+    "current_sample_size": 50,
+    "achieved_power": "Sufficient for detecting medium to large effects"
+  },
+  "conclusions": {
+    "quantum_significant": true,
+    "neuromorphic_significant": true,
+    "effect_sizes": "Large practical significance",
+    "recommendation": "Both novel architectures show statistically significant improvements"
+  }
+}

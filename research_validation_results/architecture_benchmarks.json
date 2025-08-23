@@ -1,0 +1,26 @@
+{
+  "Standard GNN": {
+    "mse": 0.5807177217677235,
+    "inference_time_total": 0.027410507202148438,
+    "time_per_sample": 0.0013705253601074218,
+    "memory_mb": 0.0,
+    "parameters": 8098,
+    "efficiency": 62.82288096513062
+  },
+  "Hierarchical GNN": {
+    "mse": 3.8358348846435546,
+    "inference_time_total": 0.06890726089477539,
+    "time_per_sample": 0.0034453630447387694,
+    "memory_mb": 0.0,
+    "parameters": 17629,
+    "efficiency": 3.7833377057361526
+  },
+  "Deep Hierarchical": {
+    "mse": 0.18891964427457425,
+    "inference_time_total": 0.10296845436096191,
+    "time_per_sample": 0.0051484227180480955,
+    "memory_mb": 0.0,
+    "parameters": 19635,
+    "efficiency": 51.40657707334587
+  }
+}

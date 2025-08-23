@@ -1,0 +1,41 @@
+{
+  "hierarchical_processing": {
+    "levels_created": 4,
+    "different_dimensions": true,
+    "valid": true
+  },
+  "scale_invariance": {
+    "small_output_shape": [
+      1,
+      1
+    ],
+    "large_output_shape": [
+      1,
+      1
+    ],
+    "same_output_dim": true,
+    "valid": true
+  },
+  "complexity_tradeoff": {
+    "Simple": {
+      "mse": 0.4748698744922876,
+      "inference_time": 0.014472484588623047,
+      "parameters": 3579
+    },
+    "Medium": {
+      "mse": 4.1869910717010494,
+      "inference_time": 0.021254539489746094,
+      "parameters": 17629
+    },
+    "Complex": {
+      "mse": 0.1076609507203102,
+      "inference_time": 0.03164863586425781,
+      "parameters": 72094
+    }
+  },
+  "robustness": {
+    "noise_level": 0.1,
+    "output_difference": 0.0005421638488769531,
+    "robust": true
+  }
+}

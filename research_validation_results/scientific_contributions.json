@@ -1,0 +1,42 @@
+{
+  "hierarchical_benefit": {
+    "flat_mse": 0.24908403439912946,
+    "hierarchical_mse": 6.766346549987793,
+    "flat_parameters": 31554,
+    "hierarchical_parameters": 18970,
+    "performance_improvement": -26.164914709649654,
+    "parameter_efficiency": 0.6011916080370159,
+    "novel_contribution": true
+  },
+  "scalability_innovation": {
+    "scaling_results": {
+      "30": {
+        "nodes": 30,
+        "mse": 1.310314118862152,
+        "time_per_sample": 0.0032029151916503906
+      },
+      "60": {
+        "nodes": 60,
+        "mse": 2.6909253120422365,
+        "time_per_sample": 0.0035308837890625
+      },
+      "120": {
+        "nodes": 120,
+        "mse": 5.51018214225769,
+        "time_per_sample": 0.004712104797363281
+      }
+    },
+    "observed_scaling_factor": 1.4711924966502903,
+    "theoretical_quadratic": 16.0,
+    "efficiency_ratio": 10.875531268973893,
+    "better_than_quadratic": true,
+    "novel_contribution": true
+  },
+  "reproducibility": {
+    "run1_mse": 0.061267247113088764,
+    "run2_mse": 0.061267247113088764,
+    "difference": 0.0,
+    "reproducible": true,
+    "research_ready": true
+  }
+}

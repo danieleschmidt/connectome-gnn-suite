@@ -9,6 +9,36 @@ import json
 from .error_handling import ValidationError, DataError
 
 
+def validate_connectome_data(connectivity_matrix: np.ndarray) -> bool:
+    """Validate connectome connectivity matrix.
+    
+    Args:
+        connectivity_matrix: Square connectivity matrix
+        
+    Returns:
+        True if valid, raises ValidationError otherwise
+        
+    Raises:
+        ValidationError: If data is invalid
+    """
+    if not isinstance(connectivity_matrix, np.ndarray):
+        raise ValidationError("Connectivity matrix must be numpy array")
+        
+    if len(connectivity_matrix.shape) != 2:
+        raise ValidationError("Connectivity matrix must be 2D")
+        
+    if connectivity_matrix.shape[0] != connectivity_matrix.shape[1]:
+        raise ValidationError("Connectivity matrix must be square")
+        
+    if connectivity_matrix.shape[0] == 0:
+        raise ValidationError("Connectivity matrix cannot be empty")
+        
+    if not np.isfinite(connectivity_matrix).all():
+        raise ValidationError("Connectivity matrix contains non-finite values")
+        
+    return True
+
+
 class BaseValidator:
     """Base class for all validators."""
     

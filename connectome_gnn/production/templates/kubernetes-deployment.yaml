@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: connectome-gnn
+  name: connectome-gnn
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: connectome-gnn
+  template:
+    metadata:
+      labels:
+        app: connectome-gnn
+    spec:
+      containers:
+      - image: connectome-gnn:latest
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        name: connectome-gnn
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          limits:
+            cpu: 2000m
+            memory: 4Gi
+          requests:
+            cpu: 500m
+            memory: 1Gi

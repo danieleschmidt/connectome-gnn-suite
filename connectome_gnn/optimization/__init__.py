@@ -4,6 +4,16 @@ try:
     from .distributed import DistributedTrainer, MultiGPUTrainer
     from .memory_efficient import MemoryEfficientModel, GradientCheckpointing, MixedPrecisionTrainer  
     from .inference import InferenceOptimizer, BatchedInference, ModelServer
+    from .adaptive_optimization import (
+        OptimizationConfig,
+        AdaptiveLearningRateScheduler,
+        AdaptiveOptimizer,
+        RAdam,
+        Lookahead,
+        GradientClippingManager,
+        OptimizerFactory,
+        OptimizationPipeline
+    )
     
     __all__ = [
         "DistributedTrainer",
@@ -13,8 +23,39 @@ try:
         "MixedPrecisionTrainer",
         "InferenceOptimizer",
         "BatchedInference",
-        "ModelServer"
+        "ModelServer",
+        "OptimizationConfig",
+        "AdaptiveLearningRateScheduler",
+        "AdaptiveOptimizer",
+        "RAdam",
+        "Lookahead",
+        "GradientClippingManager",
+        "OptimizerFactory",
+        "OptimizationPipeline"
     ]
 except ImportError:
     # Fallback if some optimization modules are not available
-    __all__ = []
+    try:
+        from .adaptive_optimization import (
+            OptimizationConfig,
+            AdaptiveLearningRateScheduler,
+            AdaptiveOptimizer,
+            RAdam,
+            Lookahead,
+            GradientClippingManager,
+            OptimizerFactory,
+            OptimizationPipeline
+        )
+        
+        __all__ = [
+            "OptimizationConfig",
+            "AdaptiveLearningRateScheduler", 
+            "AdaptiveOptimizer",
+            "RAdam",
+            "Lookahead",
+            "GradientClippingManager",
+            "OptimizerFactory",
+            "OptimizationPipeline"
+        ]
+    except ImportError:
+        __all__ = []

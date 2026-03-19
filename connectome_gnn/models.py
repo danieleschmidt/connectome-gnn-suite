@@ -1,334 +1,266 @@
-"""Neural network models for connectome analysis."""
+"""
+GNN models for brain connectome classification.
+
+Both models operate on the ConnectomeBatch produced by collate_graphs().
+No PyTorch Geometric required — message passing is implemented via
+scatter operations on plain PyTorch tensors.
+
+Models
+------
+GCNConnectome     – Graph Convolutional Network (Kipf & Welling, 2017)
+GraphSAGEConnectome – GraphSAGE (Hamilton et al., 2017)
+
+Both architectures share the same graph-level readout:
+  mean-pool over node embeddings → MLP classifier
+
+References
+----------
+Kipf, T. & Welling, M. (2017). Semi-supervised classification with
+  graph convolutional networks. ICLR 2017.
+  https://arxiv.org/abs/1609.02907
+
+Hamilton, W., Ying, R. & Leskovec, J. (2017). Inductive representation
+  learning on large graphs. NeurIPS 2017.
+  https://arxiv.org/abs/1706.02216
+"""
+
+from __future__ import annotations
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, GATConv, global_mean_pool, global_max_pool
-from torch_geometric.nn import MessagePassing
-from torch_geometric.data import Data, Batch
-from typing import Optional, List, Union
-import math
+
+from connectome_gnn.graph import ConnectomeBatch
 
 
-class BaseConnectomeModel(nn.Module):
-    """Base class for all connectome models."""
-    
-    def __init__(self):
+# ---------------------------------------------------------------------------
+# Utility: sparse message passing via scatter
+# ---------------------------------------------------------------------------
+
+def _scatter_mean(src: torch.Tensor, index: torch.Tensor, dim_size: int) -> torch.Tensor:
+    """Scatter-mean: for each target node, average incoming messages."""
+    out = torch.zeros(dim_size, src.shape[1], device=src.device, dtype=src.dtype)
+    count = torch.zeros(dim_size, 1, device=src.device, dtype=src.dtype)
+    idx = index.unsqueeze(1).expand_as(src)
+    out.scatter_add_(0, idx, src)
+    count.scatter_add_(0, index.unsqueeze(1), torch.ones(index.shape[0], 1, device=src.device))
+    return out / (count + 1e-8)
+
+
+def _scatter_sum(src: torch.Tensor, index: torch.Tensor, dim_size: int) -> torch.Tensor:
+    out = torch.zeros(dim_size, src.shape[1], device=src.device, dtype=src.dtype)
+    idx = index.unsqueeze(1).expand_as(src)
+    out.scatter_add_(0, idx, src)
+    return out
+
+
+def _graph_mean_pool(node_emb: torch.Tensor, batch: torch.Tensor, num_graphs: int) -> torch.Tensor:
+    """Average pool node embeddings per graph → [num_graphs, hidden_dim]."""
+    return _scatter_mean(node_emb, batch, dim_size=num_graphs)
+
+
+# ---------------------------------------------------------------------------
+# GCN layer
+# ---------------------------------------------------------------------------
+
+class GCNLayer(nn.Module):
+    """
+    Single GCN layer.
+
+    Forward pass implements the symmetric normalised convolution:
+        H' = D^{-1/2} A_hat D^{-1/2} H W
+    where A_hat = A + I (self-loops added).
+
+    For edge-weighted graphs we use the weighted adjacency A_w and
+    re-derive the symmetric normalisation from weighted degrees.
+    """
+
+    def __init__(self, in_channels: int, out_channels: int):
         super().__init__()
-        self.reset_parameters()
-        
-    def reset_parameters(self):
-        """Initialize model parameters."""
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-                    
-    def forward(self, data: Data) -> torch.Tensor:
-        """Forward pass - to be implemented by subclasses."""
-        raise NotImplementedError
-        
-    def get_node_embeddings(self, data: Data) -> torch.Tensor:
-        """Get node-level embeddings."""
-        raise NotImplementedError
+        self.linear = nn.Linear(in_channels, out_channels, bias=False)
+        self.bias = nn.Parameter(torch.zeros(out_channels))
+        nn.init.xavier_uniform_(self.linear.weight)
+
+    def forward(
+        self,
+        x: torch.Tensor,           # [N, in_channels]
+        edge_index: torch.Tensor,  # [2, E]
+        edge_weight: torch.Tensor, # [E]
+    ) -> torch.Tensor:
+        N = x.shape[0]
+        src, dst = edge_index
+
+        # Add self-loops (weight = 1)
+        self_idx = torch.arange(N, device=x.device)
+        sl_src = self_idx
+        sl_dst = self_idx
+        sl_w = torch.ones(N, device=x.device)
+        src_aug = torch.cat([src, sl_src], dim=0)
+        dst_aug = torch.cat([dst, sl_dst], dim=0)
+        w_aug = torch.cat([edge_weight, sl_w], dim=0)
+
+        # Weighted degree D_hat
+        deg = torch.zeros(N, device=x.device)
+        deg.scatter_add_(0, src_aug, w_aug)
+        deg_inv_sqrt = (deg + 1e-8).pow(-0.5)  # [N]
+
+        # Normalise: w_norm_ij = d_i^{-1/2} * w_ij * d_j^{-1/2}
+        w_norm = deg_inv_sqrt[src_aug] * w_aug * deg_inv_sqrt[dst_aug]
+
+        # Aggregate: sum_j w_norm_ij * (x_j W)
+        x_transformed = self.linear(x)  # [N, out]
+        msg = x_transformed[src_aug] * w_norm.unsqueeze(1)  # [E, out]
+        out = _scatter_sum(msg, dst_aug, dim_size=N)
+        return out + self.bias
 
 
-class HierarchicalBrainGNN(BaseConnectomeModel):
-    """Hierarchical Graph Neural Network respecting brain organization."""
-    
+# ---------------------------------------------------------------------------
+# GraphSAGE layer (mean aggregator)
+# ---------------------------------------------------------------------------
+
+class SAGELayer(nn.Module):
+    """
+    GraphSAGE layer with mean neighbourhood aggregation.
+
+    h_v = ReLU( W_self * h_v || W_neigh * mean_{u in N(v)} h_u )
+
+    where || denotes concatenation then projection via a single linear.
+    """
+
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__()
+        # Concat(self, agg) → out
+        self.linear = nn.Linear(in_channels * 2, out_channels)
+        nn.init.xavier_uniform_(self.linear.weight)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_weight: torch.Tensor,
+    ) -> torch.Tensor:
+        N = x.shape[0]
+        src, dst = edge_index
+
+        # Weighted mean of neighbours (weight by edge_weight)
+        msg = x[src] * edge_weight.unsqueeze(1)
+        w_sum = torch.zeros(N, 1, device=x.device)
+        w_sum.scatter_add_(0, dst.unsqueeze(1), edge_weight.unsqueeze(1))
+        agg = _scatter_sum(msg, dst, dim_size=N) / (w_sum + 1e-8)
+
+        combined = torch.cat([x, agg], dim=1)  # [N, 2*in]
+        return F.relu(self.linear(combined))
+
+
+# ---------------------------------------------------------------------------
+# Full models
+# ---------------------------------------------------------------------------
+
+class GCNConnectome(nn.Module):
+    """
+    3-layer GCN for connectome graph classification.
+
+    Architecture
+    ------------
+    Input (node features) → GCN×3 → mean-pool → MLP → class logits
+
+    Parameters
+    ----------
+    in_channels   : input node feature dimension
+    hidden_dim    : hidden layer width
+    num_classes   : number of output classes
+    num_layers    : number of GCN message-passing layers (default 3)
+    dropout       : dropout rate applied after each hidden layer
+    """
+
     def __init__(
         self,
-        node_features: int = 100,
-        hidden_dim: int = 256,
-        num_levels: int = 4,
-        parcellation: str = "AAL",
-        attention_type: str = "dense"
+        in_channels: int,
+        hidden_dim: int = 64,
+        num_classes: int = 2,
+        num_layers: int = 3,
+        dropout: float = 0.3,
     ):
         super().__init__()
-        self.node_features = node_features
-        self.hidden_dim = hidden_dim
-        self.num_levels = num_levels
-        self.parcellation = parcellation
-        self.attention_type = attention_type
-        
-        # Input projection
-        self.input_proj = nn.Linear(node_features, hidden_dim)
-        
-        # Hierarchical levels
-        self.levels = nn.ModuleList()
-        for i in range(num_levels):
-            level_dim = hidden_dim // (2 ** i)
-            self.levels.append(
-                HierarchicalLevel(
-                    in_dim=hidden_dim if i == 0 else hidden_dim // (2 ** (i-1)),
-                    out_dim=level_dim,
-                    attention_type=attention_type
-                )
-            )
-            
-        # Output projection
-        final_dim = hidden_dim // (2 ** (num_levels - 1))
-        self.output_proj = nn.Linear(final_dim, 1)  # For regression tasks
-        
-    def forward(self, data: Data) -> torch.Tensor:
-        x, edge_index, batch = data.x, data.edge_index, data.batch if hasattr(data, 'batch') else None
-        
-        # Input projection
-        if x.size(1) != self.node_features:
-            # Pad or truncate features to expected size
-            if x.size(1) < self.node_features:
-                padding = torch.zeros(x.size(0), self.node_features - x.size(1), device=x.device)
-                x = torch.cat([x, padding], dim=1)
-            else:
-                x = x[:, :self.node_features]
-                
-        x = self.input_proj(x)
-        x = F.relu(x)
-        
-        # Hierarchical processing
-        for level in self.levels:
-            x = level(x, edge_index)
-            
-        # Global pooling
-        if batch is None:
-            # Single graph
-            out = global_mean_pool(x, torch.zeros(x.size(0), dtype=torch.long, device=x.device))
-        else:
-            # Batch of graphs
-            out = global_mean_pool(x, batch)
-            
-        # Output projection
-        out = self.output_proj(out)
-        return out.squeeze(-1)
-        
-    def get_node_embeddings(self, data: Data) -> torch.Tensor:
-        """Get node embeddings without global pooling."""
-        x, edge_index = data.x, data.edge_index
-        
-        if x.size(1) != self.node_features:
-            if x.size(1) < self.node_features:
-                padding = torch.zeros(x.size(0), self.node_features - x.size(1), device=x.device)
-                x = torch.cat([x, padding], dim=1)
-            else:
-                x = x[:, :self.node_features]
-                
-        x = self.input_proj(x)
-        x = F.relu(x)
-        
-        for level in self.levels:
-            x = level(x, edge_index)
-            
-        return x
+        self.dropout = dropout
 
-
-class HierarchicalLevel(nn.Module):
-    """Single hierarchical level with attention mechanism."""
-    
-    def __init__(self, in_dim: int, out_dim: int, attention_type: str = "dense"):
-        super().__init__()
-        self.in_dim = in_dim
-        self.out_dim = out_dim
-        self.attention_type = attention_type
-        
-        if attention_type == "dense":
-            self.conv = GATConv(in_dim, out_dim, heads=4, concat=False)
-        else:
-            self.conv = GCNConv(in_dim, out_dim)
-            
-        self.norm = nn.LayerNorm(out_dim)
-        self.dropout = nn.Dropout(0.1)
-        
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-        # Graph convolution
-        out = self.conv(x, edge_index)
-        out = F.relu(out)
-        
-        # Normalization and dropout
-        out = self.norm(out)
-        out = self.dropout(out)
-        
-        # Residual connection if dimensions match
-        if x.size(1) == out.size(1):
-            out = out + x
-            
-        return out
-
-
-class TemporalConnectomeGNN(BaseConnectomeModel):
-    """GNN for temporal/dynamic functional connectivity."""
-    
-    def __init__(
-        self,
-        node_features: int = 100,
-        time_steps: int = 200,
-        lstm_hidden: int = 128,
-        gnn_hidden: int = 256,
-        temporal_attention: bool = True
-    ):
-        super().__init__()
-        self.node_features = node_features
-        self.time_steps = time_steps
-        self.lstm_hidden = lstm_hidden
-        self.gnn_hidden = gnn_hidden
-        self.temporal_attention = temporal_attention
-        
-        # Temporal processing
-        self.lstm = nn.LSTM(node_features, lstm_hidden, batch_first=True)
-        
-        # Spatial processing  
-        self.gnn_layers = nn.ModuleList([
-            GCNConv(lstm_hidden, gnn_hidden),
-            GCNConv(gnn_hidden, gnn_hidden // 2),
-        ])
-        
-        # Output
-        self.output = nn.Linear(gnn_hidden // 2, 1)
-        
-    def forward(self, data: Data) -> torch.Tensor:
-        # For now, simulate temporal data from static connectome
-        x, edge_index = data.x, data.edge_index
-        batch_size = 1
-        
-        # Simulate temporal dynamics
-        temporal_x = x.unsqueeze(0).repeat(1, self.time_steps, 1)
-        temporal_x += torch.randn_like(temporal_x) * 0.1
-        
-        # LSTM processing
-        lstm_out, _ = self.lstm(temporal_x)
-        x_temporal = lstm_out[:, -1, :]  # Use final timestep
-        
-        # GNN processing
-        for layer in self.gnn_layers:
-            x_temporal = layer(x_temporal.squeeze(0), edge_index)
-            x_temporal = F.relu(x_temporal)
-            
-        # Global pooling and output
-        out = global_mean_pool(x_temporal, torch.zeros(x_temporal.size(0), dtype=torch.long))
-        return self.output(out).squeeze(-1)
-        
-    def get_node_embeddings(self, data: Data) -> torch.Tensor:
-        return self.forward(data)  # Simplified for now
-
-
-class MultiModalBrainGNN(BaseConnectomeModel):
-    """Multi-modal GNN combining structural and functional connectivity."""
-    
-    def __init__(
-        self,
-        structural_features: int = 100,
-        functional_features: int = 200,
-        fusion_method: str = "adaptive",
-        shared_encoder: bool = False
-    ):
-        super().__init__()
-        self.structural_features = structural_features
-        self.functional_features = functional_features
-        self.fusion_method = fusion_method
-        self.shared_encoder = shared_encoder
-        
-        # Separate encoders for each modality
-        if not shared_encoder:
-            self.structural_encoder = GCNConv(structural_features, 256)
-            self.functional_encoder = GCNConv(functional_features, 256)
-        else:
-            self.shared_encoder_layer = GCNConv(max(structural_features, functional_features), 256)
-            
-        # Fusion layer
-        if fusion_method == "adaptive":
-            self.fusion = nn.MultiheadAttention(256, 8, batch_first=True)
-        else:
-            self.fusion = nn.Linear(512, 256)
-            
-        self.output = nn.Linear(256, 1)
-        
-    def forward(self, data: Data) -> torch.Tensor:
-        # Split features into structural and functional
-        x, edge_index = data.x, data.edge_index
-        
-        structural_x = x[:, :self.structural_features]
-        functional_x = x[:, self.structural_features:self.structural_features + self.functional_features]
-        
-        # Encode each modality
-        if not self.shared_encoder:
-            struct_emb = F.relu(self.structural_encoder(structural_x, edge_index))
-            func_emb = F.relu(self.functional_encoder(functional_x, edge_index))
-        else:
-            struct_emb = F.relu(self.shared_encoder_layer(structural_x, edge_index))
-            func_emb = F.relu(self.shared_encoder_layer(functional_x, edge_index))
-            
-        # Fusion
-        if self.fusion_method == "adaptive":
-            # Use attention for adaptive fusion
-            combined = torch.stack([struct_emb, func_emb], dim=1)
-            fused, _ = self.fusion(combined, combined, combined)
-            fused = fused.mean(dim=1)
-        else:
-            # Simple concatenation
-            fused = torch.cat([struct_emb, func_emb], dim=1)
-            fused = self.fusion(fused)
-            
-        # Global pooling and output
-        out = global_mean_pool(fused, torch.zeros(fused.size(0), dtype=torch.long))
-        return self.output(out).squeeze(-1)
-        
-    def get_node_embeddings(self, data: Data) -> torch.Tensor:
-        return self.forward(data)
-
-
-class PopulationGraphGNN(BaseConnectomeModel):
-    """GNN for population-level analysis across subjects."""
-    
-    def __init__(
-        self,
-        subject_features: int = 1000,
-        demographic_features: int = 10,
-        similarity_metric: str = "learned",
-        k_neighbors: int = 50
-    ):
-        super().__init__()
-        self.subject_features = subject_features
-        self.demographic_features = demographic_features
-        self.similarity_metric = similarity_metric
-        self.k_neighbors = k_neighbors
-        
-        # Subject encoder
-        self.subject_encoder = nn.Sequential(
-            nn.Linear(subject_features, 512),
-            nn.ReLU(),
-            nn.Linear(512, 256)
+        dims = [in_channels] + [hidden_dim] * num_layers
+        self.convs = nn.ModuleList(
+            [GCNLayer(dims[i], dims[i + 1]) for i in range(num_layers)]
         )
-        
-        # Population GNN
-        self.population_gnn = GCNConv(256 + demographic_features, 128)
-        
-        # Output
-        self.output = nn.Linear(128, 1)
-        
-    def forward(self, data: Data) -> torch.Tensor:
-        # Encode subject-level features
-        x = data.x[:, :self.subject_features]
-        demographics = data.x[:, self.subject_features:self.subject_features + self.demographic_features]
-        
-        subject_emb = self.subject_encoder(x)
-        combined_features = torch.cat([subject_emb, demographics], dim=1)
-        
-        # Population-level processing
-        pop_emb = F.relu(self.population_gnn(combined_features, data.edge_index))
-        
-        # Output
-        out = global_mean_pool(pop_emb, torch.zeros(pop_emb.size(0), dtype=torch.long))
-        return self.output(out).squeeze(-1)
-        
-    def get_node_embeddings(self, data: Data) -> torch.Tensor:
-        return self.forward(data)
+        self.batch_norms = nn.ModuleList(
+            [nn.BatchNorm1d(hidden_dim) for _ in range(num_layers)]
+        )
+
+        # MLP classifier head
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, num_classes),
+        )
+
+    def encode(self, batch: ConnectomeBatch) -> torch.Tensor:
+        """Return graph-level embeddings [B, hidden_dim]."""
+        x = batch.node_features
+        for i, (conv, bn) in enumerate(zip(self.convs, self.batch_norms)):
+            x = conv(x, batch.edge_index, batch.edge_weight)
+            x = bn(x)
+            x = F.relu(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        return _graph_mean_pool(x, batch.batch, batch.num_graphs)
+
+    def forward(self, batch: ConnectomeBatch) -> torch.Tensor:
+        """Return class logits [B, num_classes]."""
+        graph_emb = self.encode(batch)
+        return self.classifier(graph_emb)
 
 
-# Export all models
-__all__ = [
-    "BaseConnectomeModel",
-    "HierarchicalBrainGNN",
-    "TemporalConnectomeGNN", 
-    "MultiModalBrainGNN",
-    "PopulationGraphGNN"
-]
+class GraphSAGEConnectome(nn.Module):
+    """
+    3-layer GraphSAGE for connectome graph classification.
+
+    Architecture
+    ------------
+    Input → SAGE×3 → mean-pool → MLP → class logits
+
+    Parameters mirror GCNConnectome.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_dim: int = 64,
+        num_classes: int = 2,
+        num_layers: int = 3,
+        dropout: float = 0.3,
+    ):
+        super().__init__()
+        self.dropout = dropout
+
+        dims = [in_channels] + [hidden_dim] * num_layers
+        self.convs = nn.ModuleList(
+            [SAGELayer(dims[i], dims[i + 1]) for i in range(num_layers)]
+        )
+        self.batch_norms = nn.ModuleList(
+            [nn.BatchNorm1d(hidden_dim) for _ in range(num_layers)]
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, num_classes),
+        )
+
+    def encode(self, batch: ConnectomeBatch) -> torch.Tensor:
+        x = batch.node_features
+        for conv, bn in zip(self.convs, self.batch_norms):
+            x = conv(x, batch.edge_index, batch.edge_weight)
+            x = bn(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        return _graph_mean_pool(x, batch.batch, batch.num_graphs)
+
+    def forward(self, batch: ConnectomeBatch) -> torch.Tensor:
+        graph_emb = self.encode(batch)
+        return self.classifier(graph_emb)

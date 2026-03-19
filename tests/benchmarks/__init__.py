@@ -1,1 +1,0 @@
-"""Performance benchmarks for Connectome-GNN-Suite."""

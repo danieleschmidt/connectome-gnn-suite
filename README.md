@@ -1,435 +1,195 @@
-# Connectome-GNN-Suite
+# connectome-gnn-suite
 
-A comprehensive graph learning benchmark and toolkit built on the Human Connectome Project's 100 billion edge brain network data. Features hierarchical message-passing baselines, sub-graph visualization, and neurologically-informed graph neural network architectures.
+Graph neural networks for brain connectome analysis — a clean, dependency-light toolkit built around Human Connectome Project (HCP)-style data.
 
-## Overview
+## What is a brain connectome?
 
-Connectome-GNN-Suite provides researchers with tools to apply cutting-edge graph neural networks to the largest publicly available human brain connectivity data. The suite includes preprocessing pipelines, specialized GNN architectures for connectome data, and interpretability tools for understanding learned representations.
+The human brain contains ~86 billion neurons organised into anatomically distinct regions (ROIs — regions of interest). Neuroimaging studies like the [Human Connectome Project](https://www.humanconnectome.org/) map the *structural* connections between these regions (via diffusion MRI tractography) and the *functional* correlations (via resting-state fMRI).
 
-## Key Features
+The result is a **weighted undirected graph**:
+- **Nodes** = brain regions (e.g. 84 regions from the Desikan-Killiany parcellation)
+- **Edges** = connectivity strength between region pairs (fractional anisotropy, correlation coefficient, etc.)
+- **Graph label** = cognitive phenotype of the subject (e.g. fluid intelligence, working memory score)
 
-- **Massive Scale**: Efficient handling of 100B+ edge brain networks
-- **Hierarchical GNNs**: Multi-scale message passing respecting brain hierarchy
-- **Neurologically-Informed**: Architectures that incorporate neuroscience priors
-- **Sub-graph CLIP**: Visual explanations of learned brain representations
-- **Benchmark Tasks**: Standardized evaluation protocols for brain graph learning
-- **Memory Efficient**: Specialized data structures for connectome-scale graphs
-
-## Installation
-
-```bash
-# Basic installation
-pip install connectome-gnn-suite
-
-# With visualization support
-pip install connectome-gnn-suite[viz]
-
-# Full installation with all features
-pip install connectome-gnn-suite[full]
-
-# For development
-git clone https://github.com/yourusername/connectome-gnn-suite
-cd connectome-gnn-suite
-pip install -e ".[dev]"
-```
-
-## Quick Start
-
-### Loading Connectome Data
-
-```python
-from connectome_gnn import ConnectomeDataset
-
-# Load preprocessed HCP data
-dataset = ConnectomeDataset(
-    root="data/hcp",
-    resolution="7mm",  # 3mm, 5mm, 7mm available
-    modality="structural",  # or "functional"
-    download=True
-)
-
-# Access a subject's connectome
-connectome = dataset[0]
-print(f"Nodes: {connectome.num_nodes}, Edges: {connectome.num_edges}")
-print(f"Node features: {connectome.x.shape}")
-print(f"Edge weights: {connectome.edge_attr.shape}")
-```
-
-### Training a Hierarchical GNN
-
-```python
-from connectome_gnn.models import HierarchicalBrainGNN
-from connectome_gnn.tasks import CognitiveScorePrediction
-
-# Initialize model with brain-specific architecture
-model = HierarchicalBrainGNN(
-    node_features=100,
-    hidden_dim=256,
-    num_levels=4,  # Hierarchical levels
-    parcellation="AAL",  # Atlas-based initialization
-    attention_type="dense"  # Full attention within regions
-)
-
-# Set up cognitive score prediction task
-task = CognitiveScorePrediction(
-    target="fluid_intelligence",
-    normalize=True
-)
-
-# Train model
-trainer = ConnectomeTrainer(
-    model=model,
-    task=task,
-    batch_size=8,
-    gradient_checkpointing=True  # For memory efficiency
-)
-
-trainer.fit(dataset, epochs=100)
-```
-
-### Visualizing Learned Representations
-
-```python
-from connectome_gnn.visualization import SubgraphCLIP
-
-# Initialize visualization tool
-visualizer = SubgraphCLIP(
-    model=trained_model,
-    atlas="AAL",
-    device="cuda"
-)
-
-# Find brain regions most associated with a concept
-regions = visualizer.find_regions(
-    query="working memory",
-    top_k=10
-)
-
-# Generate brain visualization
-visualizer.plot_3d_brain(
-    regions=regions,
-    save_path="working_memory_regions.html"
-)
-```
+Graph neural networks are a natural fit: they respect the non-Euclidean structure of the connectome, allow information to flow along anatomical pathways, and can learn which connectivity patterns predict cognitive traits.
 
 ## Architecture
 
 ```
-connectome-gnn-suite/
-├── connectome_gnn/
-│   ├── data/
-│   │   ├── loaders/        # HCP data loaders
-│   │   ├── preprocessing/  # Connectome preprocessing
-│   │   └── atlases/        # Brain parcellation data
-│   ├── models/
-│   │   ├── layers/         # Custom GNN layers
-│   │   ├── architectures/  # Full model architectures
-│   │   └── pretrained/     # Pre-trained models
-│   ├── tasks/
-│   │   ├── node_level/     # Region-level predictions
-│   │   ├── edge_level/     # Connection predictions
-│   │   └── graph_level/    # Subject-level tasks
-│   ├── visualization/
-│   │   ├── brain_plots/    # 3D brain rendering
-│   │   ├── graph_viz/      # Network visualization
-│   │   └── clip/           # CLIP-based interpretation
-│   └── benchmarks/         # Evaluation protocols
-├── experiments/            # Reproducible experiments
-├── notebooks/             # Tutorial notebooks
-└── scripts/               # Data processing scripts
+Node features [N × 5]          Edge weights [E]
+       │                               │
+  ┌────▼───────────────────────────────▼────┐
+  │          Message-Passing Layer           │  ×3
+  │  (GCN: sym-norm aggregation)            │
+  │  (GraphSAGE: concat+project)            │
+  └─────────────────┬───────────────────────┘
+                    │ [N × hidden]
+             Mean Pool over nodes
+                    │ [B × hidden]
+              MLP Classifier
+                    │ [B × num_classes]
 ```
 
-## Available Models
+Two baseline models are implemented in **pure PyTorch** (no PyTorch Geometric required):
 
-### 1. Hierarchical Brain GNN
+### GCN (Kipf & Welling, 2017)
+Symmetric normalised convolution on the weighted adjacency matrix:
 
-Respects the hierarchical organization of the brain:
+```
+H' = D̂^{-1/2} Â D̂^{-1/2} H W
+```
+
+where `Â = A + I` (self-loops), `D̂` is the weighted degree matrix.
+
+### GraphSAGE (Hamilton et al., 2017)
+Inductive mean aggregation:
+
+```
+h_v = ReLU( W · concat( h_v, mean_{u∈N(v)} w_vu · h_u ) )
+```
+
+Both models use:
+- 3 message-passing layers
+- BatchNorm + ReLU + Dropout after each layer
+- Mean-pool readout → 2-layer MLP classifier
+
+## Synthetic data generator
+
+Since raw HCP data requires credentialed access, this toolkit ships a realistic **synthetic connectome generator** based on the Watts-Strogatz small-world model [1]:
+
+- High clustering coefficient (local integration, like real brains)
+- Short characteristic path length (global efficiency, like real brains)
+- Sparse connectivity (~4% density, like real structural connectomes)
+
+Node features (5 dimensions per region):
+1. Weighted degree (normalised)
+2. Local clustering coefficient
+3. Regional volume proxy (log-normal)
+4. Mean resting-state activation
+5. Cortical thickness proxy
+
+Labels are generated as a noisy linear function of graph statistics, mimicking the weak but real brain-behaviour correlations (r ~ 0.2–0.3) observed in neuroimaging.
+
+## Installation
+
+```bash
+git clone https://github.com/danieleschmidt/connectome-gnn-suite
+cd connectome-gnn-suite
+pip install -e .
+```
+
+**Requirements:** Python ≥ 3.10, PyTorch ≥ 2.0, NumPy. No PyTorch Geometric.
+
+## Quick start
 
 ```python
-model = HierarchicalBrainGNN(
-    node_features=100,
-    level_dims=[512, 256, 128, 64],  # Dimensions per level
-    level_pools=["mean", "max", "attention", "diffpool"],
-    residual_connections=True
-)
+from connectome_gnn.synthetic import generate_dataset
+from connectome_gnn.graph import ConnectomeDataLoader
+from connectome_gnn.models import GCNConnectome, GraphSAGEConnectome
+from connectome_gnn.train import Trainer
+import torch
+
+# Generate 200 synthetic subjects
+graphs = generate_dataset(num_subjects=200, seed=42)
+train, val = graphs[:160], graphs[160:]
+
+train_loader = ConnectomeDataLoader(train, batch_size=16)
+val_loader   = ConnectomeDataLoader(val,   batch_size=16, shuffle=False)
+
+# Train GCN
+model = GCNConnectome(in_channels=5, hidden_dim=64, num_classes=2)
+trainer = Trainer(model, torch.optim.Adam(model.parameters(), lr=1e-3))
+history = trainer.fit(train_loader, val_loader, num_epochs=50, patience=10)
+
+# Evaluate
+metrics = trainer.evaluate(val_loader)
+print(f"Val accuracy: {metrics['accuracy']:.3f}")
 ```
 
-### 2. Temporal Connectome GNN
+## Full demo
 
-For dynamic functional connectivity:
+```bash
+python examples/demo.py
+```
+
+Trains both GCN and GraphSAGE on 300 synthetic subjects and prints a comparison table. Expected accuracy: **55–70%** (realistic for noisy brain-behaviour data).
+
+## Tests
+
+```bash
+python -m pytest tests/ -v
+```
+
+43 tests covering graph data structures, synthetic generation, model forward passes, gradient flow, and the training loop.
+
+## Repository structure
+
+```
+connectome_gnn/
+  __init__.py    – public API
+  graph.py       – ConnectomeGraph, ConnectomeBatch, DataLoader
+  synthetic.py   – Watts-Strogatz connectome generator
+  models.py      – GCNConnectome, GraphSAGEConnectome
+  train.py       – Trainer with early stopping
+
+tests/
+  test_graph.py      – data structure tests
+  test_synthetic.py  – generator tests
+  test_models.py     – forward pass & gradient tests
+  test_training.py   – training loop tests
+
+examples/
+  demo.py            – end-to-end training demo
+```
+
+## Extending to real HCP data
+
+To use real HCP structural connectivity matrices:
+
+1. Download processed connectivity matrices from [HCP ConnectomeDB](https://db.humanconnectome.org/)
+2. Load as NumPy arrays (84×84 or 360×360 depending on parcellation)
+3. Convert to `ConnectomeGraph` objects:
 
 ```python
-model = TemporalConnectomeGNN(
-    node_features=100,
-    time_steps=200,
-    lstm_hidden=128,
-    gnn_hidden=256,
-    temporal_attention=True
-)
+import numpy as np
+import torch
+from connectome_gnn.graph import ConnectomeGraph
+
+def hcp_matrix_to_graph(connectivity_matrix: np.ndarray, label: int) -> ConnectomeGraph:
+    A = torch.tensor(connectivity_matrix, dtype=torch.float32)
+    # Threshold: keep top 10% of connections
+    threshold = A.flatten().quantile(0.90)
+    A_thresh = (A > threshold).float() * A
+    src, dst = torch.where(A_thresh > 0)
+    edge_index = torch.stack([
+        torch.cat([src, dst]),
+        torch.cat([dst, src]),
+    ])
+    weights = A_thresh[src]
+    edge_weight = torch.cat([weights, weights])
+    # Node features: degree + threshold statistics
+    deg = A_thresh.sum(dim=1, keepdim=True)
+    node_features = deg / (deg.max() + 1e-8)  # add more features as needed
+    return ConnectomeGraph(
+        node_features=node_features,
+        edge_index=edge_index,
+        edge_weight=edge_weight,
+        label=torch.tensor(label, dtype=torch.long),
+    )
 ```
 
-### 3. Multi-Modal Brain GNN
+## References
 
-Combines structural and functional connectivity:
+[1] Watts, D. J. & Strogatz, S. H. (1998). Collective dynamics of 'small-world' networks. *Nature*, 393(6684), 440–442.
 
-```python
-model = MultiModalBrainGNN(
-    structural_features=100,
-    functional_features=200,
-    fusion_method="adaptive",
-    shared_encoder=False
-)
-```
+[2] Kipf, T. N. & Welling, M. (2017). Semi-supervised classification with graph convolutional networks. *ICLR 2017*. [arXiv:1609.02907](https://arxiv.org/abs/1609.02907)
 
-### 4. Population Graph GNN
+[3] Hamilton, W., Ying, R. & Leskovec, J. (2017). Inductive representation learning on large graphs. *NeurIPS 2017*. [arXiv:1706.02216](https://arxiv.org/abs/1706.02216)
 
-For analyzing differences across subjects:
+[4] Rubinov, M. & Sporns, O. (2010). Complex network measures of brain connectivity: uses and interpretations. *NeuroImage*, 52(3), 1059–1069.
 
-```python
-model = PopulationGraphGNN(
-    subject_features=1000,
-    demographic_features=10,
-    similarity_metric="learned",
-    k_neighbors=50
-)
-```
-
-## Benchmark Tasks
-
-### Subject-Level Prediction
-
-```python
-from connectome_gnn.benchmarks import SubjectBenchmark
-
-benchmark = SubjectBenchmark()
-
-# Available tasks:
-# - Age prediction
-# - Sex classification  
-# - Cognitive scores (7 different measures)
-# - Clinical diagnosis (when available)
-
-results = benchmark.evaluate(
-    model=model,
-    dataset=dataset,
-    metrics=["mae", "accuracy", "auroc"]
-)
-```
-
-### Edge Prediction
-
-```python
-from connectome_gnn.benchmarks import EdgePredictionBenchmark
-
-# Predict missing connections
-benchmark = EdgePredictionBenchmark(
-    mask_ratio=0.1,
-    negative_sampling_ratio=1.0
-)
-
-results = benchmark.evaluate(model, dataset)
-```
-
-### Graph Classification
-
-```python
-from connectome_gnn.benchmarks import ClinicalClassification
-
-# Classify clinical conditions
-benchmark = ClinicalClassification(
-    conditions=["autism", "schizophrenia", "alzheimers"],
-    balanced_sampling=True
-)
-
-results = benchmark.evaluate(model, dataset)
-```
-
-## Advanced Features
-
-### Memory-Efficient Training
-
-```python
-from connectome_gnn.utils import GraphSampler
-
-# For extremely large graphs
-sampler = GraphSampler(
-    method="hierarchical_clustering",
-    num_clusters=1000,
-    samples_per_cluster=10
-)
-
-# Mini-batch training on subgraphs
-for subgraph in sampler.sample(large_connectome):
-    loss = model(subgraph)
-    loss.backward()
-```
-
-### Interpretability Tools
-
-```python
-from connectome_gnn.interpret import BrainGNNExplainer
-
-explainer = BrainGNNExplainer(model)
-
-# Get important edges for prediction
-important_edges = explainer.explain_edges(
-    connectome,
-    target_class="high_intelligence"
-)
-
-# Get important nodes (brain regions)
-important_regions = explainer.explain_nodes(
-    connectome,
-    method="integrated_gradients"
-)
-
-# Visualize explanation
-explainer.visualize_explanation(
-    important_edges,
-    important_regions,
-    brain_template="MNI152"
-)
-```
-
-### Pre-training on Large Connectome Datasets
-
-```python
-from connectome_gnn.pretrain import ConnectomePretrainer
-
-# Self-supervised pre-training
-pretrainer = ConnectomePretrainer(
-    model=model,
-    objective="masked_edge_prediction",
-    mask_ratio=0.15
-)
-
-pretrained_model = pretrainer.pretrain(
-    unlabeled_connectomes,
-    epochs=50,
-    batch_size=32
-)
-```
-
-## Data Preprocessing
-
-### Custom Connectome Processing
-
-```python
-from connectome_gnn.preprocessing import ConnectomeProcessor
-
-processor = ConnectomeProcessor(
-    parcellation="Schaefer400",
-    edge_threshold=0.01,
-    normalization="log_transform"
-)
-
-# Process raw connectivity matrix
-processed = processor.process(
-    connectivity_matrix,
-    node_timeseries=timeseries_data,
-    confounds=motion_parameters
-)
-```
-
-### Multi-Site Harmonization
-
-```python
-from connectome_gnn.preprocessing import ComBatHarmonization
-
-# Harmonize data from multiple scanning sites
-harmonizer = ComBatHarmonization()
-
-harmonized_data = harmonizer.fit_transform(
-    connectomes,
-    site_labels=site_ids,
-    biological_covariates=demographics
-)
-```
-
-## Visualization Examples
-
-### 3D Brain Network Visualization
-
-```python
-from connectome_gnn.visualization import BrainNetworkPlot
-
-plotter = BrainNetworkPlot()
-
-# Interactive 3D visualization
-plotter.plot_connectome(
-    connectome,
-    node_colors=model.get_node_embeddings(),
-    edge_threshold=0.95,
-    layout="force_directed_3d",
-    save_path="brain_network.html"
-)
-```
-
-### Glass Brain Plots
-
-```python
-# Generate publication-ready glass brain plots
-plotter.glass_brain(
-    connectome,
-    highlight_regions=important_regions,
-    views=["sagittal", "coronal", "axial"],
-    save_path="glass_brain.png",
-    dpi=300
-)
-```
-
-## Performance Benchmarks
-
-| Model | Parameters | Memory (GB) | Training Time | Test MAE |
-|-------|-----------|-------------|---------------|----------|
-| HierarchicalBrainGNN | 5.2M | 12 | 2.5h | 0.82 |
-| TemporalConnectomeGNN | 8.7M | 18 | 4.1h | 0.79 |
-| MultiModalBrainGNN | 12.1M | 24 | 6.3h | 0.75 |
-| PopulationGraphGNN | 3.4M | 8 | 1.8h | 0.85 |
-
-## Contributing
-
-We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-### Adding New Models
-
-```python
-from connectome_gnn.models import BaseConnectomeModel
-
-class MyCustomGNN(BaseConnectomeModel):
-    def __init__(self, **kwargs):
-        super().__init__()
-        # Initialize your architecture
-    
-    def forward(self, data):
-        # Implement forward pass
-        pass
-```
-
-## Citation
-
-```bibtex
-@software{connectome_gnn_suite,
-  title={Connectome-GNN-Suite: Graph Neural Networks for Human Brain Connectivity},
-  author={Daniel Schmidt},
-  year={2025},
-  url={https://github.com/danieleschmidt/connectome-gnn-suite}
-}
-
-@dataset{hcp_data,
-  title={Human Connectome Project},
-  author={Van Essen, David C and others},
-  year={2013},
-  publisher={NeuroImage}
-}
-```
+[5] Van Essen, D. C. et al. (2013). The WU-Minn Human Connectome Project: an overview. *NeuroImage*, 80, 62–79.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
-
-## Acknowledgments
-
-- Human Connectome Project for providing the data
-- PyTorch Geometric team for the GNN framework
-- Neuroscience community for domain expertise
+MIT

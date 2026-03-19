@@ -1,1 +1,1 @@
-"""Test suite for Connectome-GNN-Suite."""
+# tests package
